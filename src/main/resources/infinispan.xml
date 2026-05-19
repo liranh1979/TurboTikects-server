@@ -1,0 +1,12 @@
+<infinispan>
+<cache-container default-cache="default">
+    <local-cache name="default"/>
+    <!-- This defines the 'sessions' cache explicitly -->
+    <local-cache name="sessions">
+        <expiration lifespan="3600000"/> <!-- 1 hour session -->
+    </local-cache>
+    <local-cache name="system_fields">
+        <expiration lifespan="3600000"/> <!-- 1 hour session -->
+    </local-cache>
+</cache-container>
+</infinispan>
