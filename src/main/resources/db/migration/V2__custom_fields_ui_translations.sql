@@ -1,0 +1,22 @@
+-- UI translation keys for the Custom Fields Manager page
+INSERT IGNORE INTO dynamic_translations (lang_code, translation_key, translated_text, type) VALUES
+('en', 'manage_custom_fields',   'Manage Custom Fields',                            'system'),
+('en', 'add_new_field',          'Add New Field',                                   'system'),
+('en', 'field_key_label',        'Field Key',                                       'system'),
+('en', 'field_label_label',      'Display Label',                                   'system'),
+('en', 'field_type_select',      'Field Type',                                      'system'),
+('en', 'field_type_text',        'Text',                                            'system'),
+('en', 'field_type_number',      'Number',                                          'system'),
+('en', 'field_type_date',        'Date',                                            'system'),
+('en', 'field_type_checkbox',    'Checkbox',                                        'system'),
+('en', 'field_type_combobox',    'Combobox (Single Select)',                        'system'),
+('en', 'field_type_multi_select','Multi Select',                                    'system'),
+('en', 'field_type_rich_text',   'Rich Text',                                       'system'),
+('en', 'field_type_email',       'Email',                                           'system'),
+('en', 'field_type_phone',       'Phone',                                           'system'),
+('en', 'field_type_url',         'URL',                                             'system'),
+('en', 'no_custom_fields',       'No custom fields yet. Add your first field.',     'system'),
+('en', 'field_key_hint',         'e.g. customer_priority (lowercase, underscores)', 'system'),
+('en', 'field_label_hint',       'e.g. Customer Priority',                          'system'),
+('en', 'translating',            'Translating...',                                  'system'),
+('en', 'auto_translate_all',     'AI Auto Translate',                               'system');
