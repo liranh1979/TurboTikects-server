@@ -11,4 +11,8 @@ import java.util.Optional;
 public interface DynamicTranslationsRepository  extends JpaRepository<DynamicTranslationsEntity,Long>{
 
    Optional<List<DynamicTranslationsEntity>> findAllByLangCodeAndType(String langCode, String type);
+
+   List<DynamicTranslationsEntity> findByLangCode(String langCode);
+
+   void deleteByLangCode(String langCode);
 }

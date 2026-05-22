@@ -112,7 +112,11 @@ INSERT IGNORE INTO dynamic_translations (lang_code, translation_key, translated_
     ('en', 'set_active',               'Set Active',                                                              'system'),
     ('en', 'active',                   'Active',                                                                  'system'),
     ('en', 'save_provider',            'Save Provider',                                                           'system'),
-    ('en', 'confirm_delete',           'Are you sure you want to delete this AI configuration?',                  'system');
+    ('en', 'confirm_delete',           'Are you sure you want to delete this AI configuration?',                  'system'),
+    ('en', 'auto_translate_all', 'AI Auto translate', 'system'),
+    ('en','core_platform_fields', 'system fields','system'),
+    ('en', 'user_defined_fields', 'users fields', 'system');
+
 
 -- 4. System languages
 CREATE TABLE IF NOT EXISTS system_languages (

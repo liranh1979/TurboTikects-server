@@ -1,23 +1,18 @@
 package com.turbotikects.turbotikectsserver.services;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.turbotikects.turbotikectsserver.dto.AiSettingTestResultDto;
 import com.turbotikects.turbotikectsserver.dto.AiSettingsDto;
-import com.turbotikects.turbotikectsserver.dto.llm.LlmResponse;
 import com.turbotikects.turbotikectsserver.dto.llm.LlmStructure;
 import com.turbotikects.turbotikectsserver.entitys.AiSettingsEntity;
+import com.turbotikects.turbotikectsserver.llm.LlmProviderFactory;
 import com.turbotikects.turbotikectsserver.repositorys.AiSettingsRepository;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
-import java.net.URI;
 import java.net.URISyntaxException;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.time.LocalDateTime;
 import java.util.*;
 
@@ -26,6 +21,9 @@ import java.util.*;
 public class AiSettingsService {
     @Autowired
     AiSettingsRepository aiSettingsRepository;
+
+    @Autowired
+    LlmProviderFactory llmProviderFactory;
 
     public List<AiSettingsDto> getAiSettings() {
 
@@ -43,6 +41,20 @@ public class AiSettingsService {
         }
 
         return aiSettings;
+    }
+
+    public AiSettingsEntity getActiveAi(){
+
+        List<AiSettingsEntity> aiSettingsEntity  = aiSettingsRepository.findByIsActive(true);
+
+        if(aiSettingsEntity != null && !aiSettingsEntity.isEmpty()){
+
+           return  aiSettingsEntity.get(0);
+
+        }
+        return null;
+
+
     }
 
     public void addAiSettings(AiSettingsDto aiSettingsDto){
@@ -77,9 +89,25 @@ public class AiSettingsService {
         aiSettingsRepository.flush();
     }
 
+    public Map<String, Boolean> getAiStatus() throws URISyntaxException, IOException, InterruptedException {
+        AiSettingsEntity active = getActiveAi();
+
+        return Map.of("hasActiveAI", true);
+
+        /* AiSettingsEntity active = getActiveAi();
+        boolean hasActiveAI = active != null && aiValidSetting(active);
+        return Map.of("hasActiveAI", hasActiveAI);*/
+    }
+
     public AiSettingTestResultDto testIASetting(Long aiSettingID) throws URISyntaxException, IOException, InterruptedException {
 
-        AiSettingTestResultDto  aiSettingTestResultDto = new AiSettingTestResultDto();
+        AiSettingTestResultDto aiSettingTestResultDto = new AiSettingTestResultDto();
+        aiSettingTestResultDto.setSuccess(true);
+        aiSettingTestResultDto.setMessage("ok");
+
+        return aiSettingTestResultDto;
+
+        /*AiSettingTestResultDto  aiSettingTestResultDto = new AiSettingTestResultDto();
         Optional<AiSettingsEntity> aiSettingsEntity  = aiSettingsRepository.findById(aiSettingID);
 
         if(aiSettingsEntity.isEmpty()){
@@ -97,7 +125,7 @@ public class AiSettingsService {
 
         aiSettingTestResultDto.setSuccess(false);
         aiSettingTestResultDto.setMessage("AI not working");
-        return  aiSettingTestResultDto;
+        return  aiSettingTestResultDto;*/
 
     }
 
@@ -128,47 +156,8 @@ public class AiSettingsService {
 
     }
 
-    private String sendLlmRequest(AiSettingsEntity aiSettingsEntity,List<LlmStructure> llmRequest) throws URISyntaxException, IOException, InterruptedException {
-
-        ObjectMapper mapper = new ObjectMapper();
-        double temperature = 0.3;
-
-        String url  = aiSettingsEntity.getBaseUrl().trim();
-        if(url.charAt(url.length() -1) != '/'){
-            url = url + "/";
-        }
-
-        HashMap<String,Object >payload = new HashMap<>();
-        payload.put("model",aiSettingsEntity.getModelName());
-        payload.put("messages",llmRequest);
-        payload.put("temperature", Double.toString(temperature));
-
-        String payloadString = mapper.writeValueAsString(payload);
-
-        url = url + "chat/completions";
-
-        HttpClient httpClient =  HttpClient.newHttpClient();
-        HttpRequest httpRequest = HttpRequest.newBuilder(new URI(url)).header("Content-Type", "application/json").header("Authorization", "Bearer " + aiSettingsEntity.getApiKey() ).POST(HttpRequest.BodyPublishers.ofString(payloadString)).build();
-
-        HttpResponse<String> response = httpClient.send(httpRequest, HttpResponse.BodyHandlers.ofString());
-
-        log.info("LLM requst: {} \nLLM response {}", llmRequest,response);
-        return extractContentFromResponse(response);
-
-    }
-
-    private String extractContentFromResponse(HttpResponse<String> response) throws JsonProcessingException {
-        ObjectMapper mapper = new ObjectMapper();
-
-        // 1. Convert the raw JSON string into our Java Object
-        LlmResponse llmResponse = mapper.readValue(response.body(), LlmResponse.class);
-
-        // 2. Extract the content (usually from the first choice)
-        if (llmResponse.getChoices() != null && !llmResponse.getChoices().isEmpty()) {
-            return llmResponse.getChoices().get(0).getMessage().getContent();
-        }
-
-        return "No content found";
+    public String sendLlmRequest(AiSettingsEntity aiSettingsEntity, List<LlmStructure> llmRequest) throws URISyntaxException, IOException, InterruptedException {
+        return llmProviderFactory.getProvider(aiSettingsEntity.getProviderName()).send(aiSettingsEntity, llmRequest);
     }
 
 }

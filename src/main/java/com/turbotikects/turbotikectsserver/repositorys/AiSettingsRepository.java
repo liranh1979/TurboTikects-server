@@ -6,6 +6,8 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 
+import java.util.List;
+
 public interface AiSettingsRepository extends JpaRepository<AiSettingsEntity,Long> {
 
     @Modifying // Tells Spring this is an update/delete operation ⚡
@@ -19,4 +21,5 @@ public interface AiSettingsRepository extends JpaRepository<AiSettingsEntity,Lon
     @Query("UPDATE AiSettingsEntity a SET a.isActive = true where a.id = :id")
     void deactivatedSettings(Long id);
 
+    List<AiSettingsEntity> findByIsActive(boolean isActive);
 }
