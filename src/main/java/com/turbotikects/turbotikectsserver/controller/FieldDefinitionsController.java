@@ -39,4 +39,9 @@ public class FieldDefinitionsController {
     public void updateFieldTranslations(@RequestBody UpdateTranslationsRequestDto dto) {
         fieldDefinitionsService.updateFieldTranslations(dto);
     }
+
+    @PatchMapping("/{id}/list-visibility")
+    public void setListVisibility(@PathVariable Long id, @RequestParam boolean visible) {
+        fieldDefinitionsService.setListVisibility(id, visible);
+    }
 }

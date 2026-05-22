@@ -33,6 +33,13 @@ public class FieldDefinitionsService {
         return fieldDefinitionsRepository.findByIsSystemFalseOrderByDisplayOrder();
     }
 
+    public void setListVisibility(Long id, boolean visible) {
+        fieldDefinitionsRepository.findById(id).ifPresent(f -> {
+            f.setListVisible(visible);
+            fieldDefinitionsRepository.save(f);
+        });
+    }
+
     public Map<String, String> getFieldTranslations(String langCode) {
         Map<String, String> result = new HashMap<>();
         Optional<List<DynamicTranslationsEntity>> entries =
