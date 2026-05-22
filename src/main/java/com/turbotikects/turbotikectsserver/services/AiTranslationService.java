@@ -29,7 +29,7 @@ public class AiTranslationService {
         this.dynamicTranslationsRepository = dynamicTranslationsRepository;
     }
 
-    public BulkTranslateResponseDto bulkTranslate(Map<String, String> translations, String targetLanguage) throws IOException, URISyntaxException, InterruptedException {
+    public BulkTranslateResponseDto bulkTranslate(String targetLanguage) throws IOException, URISyntaxException, InterruptedException {
         BulkTranslateResponseDto response = new BulkTranslateResponseDto();
 
         AiSettingsEntity aiSettingsEntity = aiSettingsService.getActiveAi();
@@ -67,12 +67,9 @@ public class AiTranslationService {
 
         Map<String, String> translated = objectMapper.readValue(cleaned, objectMapper.getTypeFactory().constructMapType(Map.class, String.class, String.class));
 
-        for(String key: translated.keySet()){
-            translations.put(key, translated.get(key));
-        }
-
+        // Return only the newly translated entries so the client can merge them
         response.setSuccess(true);
-        response.setTranslations(translations);
+        response.setTranslations(translated);
         return response;
     }
 
