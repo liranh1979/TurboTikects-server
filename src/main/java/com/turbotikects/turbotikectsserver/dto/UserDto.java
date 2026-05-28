@@ -3,6 +3,7 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import lombok.Getter;
 import lombok.Setter;
 
+import java.util.List;
 import java.util.Map;
 
 @Getter
@@ -20,4 +21,7 @@ public class UserDto {
 
     @JsonProperty("user_metadata")
     private Map<String, Object> metadata;
+
+    @JsonProperty("effective_permissions")
+    private List<String> effectivePermissions;
 }

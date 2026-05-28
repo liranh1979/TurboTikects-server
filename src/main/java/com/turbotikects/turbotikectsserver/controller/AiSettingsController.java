@@ -4,6 +4,7 @@ import com.turbotikects.turbotikectsserver.dto.AiSettingTestResultDto;
 import com.turbotikects.turbotikectsserver.dto.AiSettingsDto;
 import com.turbotikects.turbotikectsserver.dto.BulkTranslateRequestDto;
 import com.turbotikects.turbotikectsserver.dto.BulkTranslateResponseDto;
+import com.turbotikects.turbotikectsserver.security.RequirePermission;
 import com.turbotikects.turbotikectsserver.services.AiSettingsService;
 import com.turbotikects.turbotikectsserver.services.AiTranslationService;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -17,6 +18,7 @@ import java.util.Map;
 @CrossOrigin(origins = "${app.cors.origins}")
 @RestController
 @RequestMapping("/api/v1/ai")
+@RequirePermission("MANAGE_AI")
 public class AiSettingsController {
 
     @Autowired

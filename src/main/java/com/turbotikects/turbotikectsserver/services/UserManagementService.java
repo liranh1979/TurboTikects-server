@@ -20,23 +20,31 @@ public class UserManagementService {
     private final UserRepository userRepository;
     private final FieldDefinitionsRepository fieldDefinitionsRepository;
     private final TaskProgressService taskProgressService;
+    private final PermissionService permissionService;
 
     public UserManagementService(UserRepository userRepository,
                                  FieldDefinitionsRepository fieldDefinitionsRepository,
-                                 TaskProgressService taskProgressService) {
+                                 TaskProgressService taskProgressService,
+                                 PermissionService permissionService) {
         this.userRepository = userRepository;
         this.fieldDefinitionsRepository = fieldDefinitionsRepository;
         this.taskProgressService = taskProgressService;
+        this.permissionService = permissionService;
     }
 
     public List<UserListItemDto> getAllUsers() {
-        return userRepository.findAll().stream().map(u -> {
+        List<UserEntity> users = userRepository.findAll();
+        List<Long> userIds = users.stream().map(UserEntity::getRed_id).toList();
+        Map<Long, List<String>> permMap = permissionService.getPersonalPermissionsForUsers(userIds);
+
+        return users.stream().map(u -> {
             UserListItemDto dto = new UserListItemDto();
             dto.setId(u.getRed_id());
             dto.setUsername(u.getUsername());
             dto.setDisplayName(u.getDisplayName());
             dto.setSuperAdmin(u.isSuperAdmin());
             dto.setMetadata(u.getMetadata());
+            dto.setPersonalPermissions(permMap.getOrDefault(u.getRed_id(), List.of()));
             return dto;
         }).toList();
     }
@@ -61,6 +69,7 @@ public class UserManagementService {
         result.setDisplayName(user.getDisplayName());
         result.setSuperAdmin(false);
         result.setMetadata(user.getMetadata());
+        result.setPersonalPermissions(List.of());
         return result;
     }
 
@@ -83,12 +92,17 @@ public class UserManagementService {
 
         userRepository.save(user);
 
+        if (dto.getPermissions() != null) {
+            permissionService.setUserPermissions(id, dto.getPermissions());
+        }
+
         UserListItemDto result = new UserListItemDto();
         result.setId(user.getRed_id());
         result.setUsername(user.getUsername());
         result.setDisplayName(user.getDisplayName());
         result.setSuperAdmin(user.isSuperAdmin());
         result.setMetadata(user.getMetadata());
+        result.setPersonalPermissions(permissionService.getPersonalPermissions(id));
         return result;
     }
 

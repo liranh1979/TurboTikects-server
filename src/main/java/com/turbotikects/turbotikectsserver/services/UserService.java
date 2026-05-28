@@ -8,40 +8,42 @@ import com.turbotikects.turbotikectsserver.utils.HashUtils;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.cache.annotation.CacheEvict;
 import org.springframework.cache.annotation.Cacheable;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
 
+import java.util.List;
 import java.util.Optional;
 
 @Service
 public class UserService {
 
     @Autowired private UserRepository userRepository;
-    public  UserService(UserRepository userRepository){
+    private final PermissionService permissionService;
 
+    public UserService(UserRepository userRepository, @Lazy PermissionService permissionService) {
         this.userRepository = userRepository;
+        this.permissionService = permissionService;
     }
 
-    public UserDto login(LoginRequest loginRequest){
+    public UserDto login(LoginRequest loginRequest) {
+        String hashPassword = HashUtils.sha1(loginRequest.getUsername() + "_" + loginRequest.getPassword());
+        Optional<UserEntity> user = userRepository.findByUsernameAndPassword(loginRequest.getUsername(), hashPassword);
 
-
-
-        String hashPassword =  HashUtils.sha1(loginRequest.getUsername() +"_" + loginRequest.getPassword());
-        Optional<UserEntity> user;
-
-        user = userRepository.findByUsernameAndPassword(loginRequest.getUsername(),hashPassword);
-
-        if(user.isPresent()){
+        if (user.isPresent()) {
             UserDto userDto = new UserDto();
             userDto.setUsername(loginRequest.getUsername());
             userDto.setDisplayName(user.get().getDisplayName());
             userDto.setSuperAdmin(user.get().isSuperAdmin());
             userDto.setMetadata(user.get().getMetadata());
+
+            List<String> effective = permissionService.computeEffectivePermissions(user.get().getRed_id());
+            userDto.setEffectivePermissions(effective);
+
             return userDto;
         }
         throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Invalid credentials");
-
     }
 
     @Cacheable(value = "sessions", key = "#sessionId")

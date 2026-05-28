@@ -3,6 +3,7 @@ package com.turbotikects.turbotikectsserver.controller;
 import com.turbotikects.turbotikectsserver.dto.FieldDefinitionDto;
 import com.turbotikects.turbotikectsserver.dto.UpdateTranslationsRequestDto;
 import com.turbotikects.turbotikectsserver.entitys.FieldDefinitionsEntity;
+import com.turbotikects.turbotikectsserver.security.RequirePermission;
 import com.turbotikects.turbotikectsserver.services.FieldDefinitionsService;
 import org.springframework.web.bind.annotation.*;
 
@@ -13,6 +14,7 @@ import java.util.ArrayList;
 @CrossOrigin(origins = "${app.cors.origins}")
 @RestController
 @RequestMapping("/api/v1/field-definitions")
+@RequirePermission("MANAGE_FIELDS")
 public class FieldDefinitionsController {
 
     private final FieldDefinitionsService fieldDefinitionsService;

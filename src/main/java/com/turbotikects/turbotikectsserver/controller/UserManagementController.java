@@ -3,6 +3,7 @@ package com.turbotikects.turbotikectsserver.controller;
 import com.turbotikects.turbotikectsserver.dto.CreateUserDto;
 import com.turbotikects.turbotikectsserver.dto.UpdateUserDto;
 import com.turbotikects.turbotikectsserver.dto.UserListItemDto;
+import com.turbotikects.turbotikectsserver.security.RequirePermission;
 import com.turbotikects.turbotikectsserver.services.UserManagementService;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
@@ -13,6 +14,7 @@ import java.util.Map;
 @CrossOrigin(origins = "${app.cors.origins}")
 @RestController
 @RequestMapping("/api/v1/users")
+@RequirePermission("MANAGE_USERS")
 public class UserManagementController {
 
     private final UserManagementService userManagementService;

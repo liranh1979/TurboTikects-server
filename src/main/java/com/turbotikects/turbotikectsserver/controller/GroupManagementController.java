@@ -5,6 +5,7 @@ import com.turbotikects.turbotikectsserver.dto.CreateGroupDto;
 import com.turbotikects.turbotikectsserver.dto.GroupListItemDto;
 import com.turbotikects.turbotikectsserver.dto.GroupMemberDto;
 import com.turbotikects.turbotikectsserver.dto.UpdateGroupDto;
+import com.turbotikects.turbotikectsserver.security.RequirePermission;
 import com.turbotikects.turbotikectsserver.services.GroupManagementService;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
@@ -15,6 +16,7 @@ import java.util.Map;
 @CrossOrigin(origins = "${app.cors.origins}")
 @RestController
 @RequestMapping("/api/v1/groups")
+@RequirePermission("MANAGE_GROUPS")
 public class GroupManagementController {
 
     private final GroupManagementService groupManagementService;
@@ -69,6 +71,7 @@ public class GroupManagementController {
     }
 
     @GetMapping("/by-user/{userId}")
+    @RequirePermission({"MANAGE_USERS", "MANAGE_GROUPS"})
     public List<GroupListItemDto> getGroupsForUser(@PathVariable Long userId) {
         return groupManagementService.getGroupsForUser(userId);
     }

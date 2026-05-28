@@ -20,6 +20,7 @@ import org.springframework.web.server.ResponseStatusException;
 
 import java.util.*;
 import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 @Service
 public class GroupManagementService {
@@ -29,27 +30,36 @@ public class GroupManagementService {
     private final UserRepository userRepository;
     private final FieldDefinitionsRepository fieldDefinitionsRepository;
     private final TaskProgressService taskProgressService;
+    private final PermissionService permissionService;
 
     public GroupManagementService(GroupRepository groupRepository,
                                   GroupMemberRepository groupMemberRepository,
                                   UserRepository userRepository,
                                   FieldDefinitionsRepository fieldDefinitionsRepository,
-                                  TaskProgressService taskProgressService) {
+                                  TaskProgressService taskProgressService,
+                                  PermissionService permissionService) {
         this.groupRepository = groupRepository;
         this.groupMemberRepository = groupMemberRepository;
         this.userRepository = userRepository;
         this.fieldDefinitionsRepository = fieldDefinitionsRepository;
         this.taskProgressService = taskProgressService;
+        this.permissionService = permissionService;
     }
 
     public List<GroupListItemDto> getAllGroups() {
         List<GroupEntity> groups = groupRepository.findAll();
 
-        // Fetch all memberships in one query, aggregate counts in memory
         Map<Long, Long> memberCounts = groupMemberRepository.findAll().stream()
                 .collect(Collectors.groupingBy(GroupMemberEntity::getGroupId, Collectors.counting()));
 
-        return groups.stream().map(g -> toDto(g, memberCounts.getOrDefault(g.getRefId(), 0L).intValue())).toList();
+        List<Long> groupIds = groups.stream().map(GroupEntity::getRefId).toList();
+        Map<Long, List<String>> permMap = permissionService.getGroupPermissionsForGroups(groupIds);
+
+        return groups.stream().map(g -> {
+            GroupListItemDto dto = toDto(g, memberCounts.getOrDefault(g.getRefId(), 0L).intValue());
+            dto.setPermissions(permMap.getOrDefault(g.getRefId(), List.of()));
+            return dto;
+        }).toList();
     }
 
     public GroupListItemDto createGroup(CreateGroupDto dto) {
@@ -79,8 +89,15 @@ public class GroupManagementService {
         }
 
         groupRepository.save(group);
+
+        if (dto.getPermissions() != null) {
+            permissionService.setGroupPermissions(id, dto.getPermissions());
+        }
+
         int count = (int) groupMemberRepository.countByGroupId(id);
-        return toDto(group, count);
+        GroupListItemDto result = toDto(group, count);
+        result.setPermissions(permissionService.getGroupPermissions(id));
+        return result;
     }
 
     public void deleteGroup(Long id) {
