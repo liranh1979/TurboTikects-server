@@ -8,7 +8,7 @@ import org.hibernate.type.SqlTypes;
 import java.util.Map;
 
 @Entity
-@Table(name = "groups")
+@Table(name = "user_groups")
 @Data
 public class GroupEntity {
 

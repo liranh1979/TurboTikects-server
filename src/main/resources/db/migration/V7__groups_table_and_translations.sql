@@ -1,5 +1,5 @@
 -- ── Groups table ────────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS groups (
+CREATE TABLE IF NOT EXISTS user_groups (
     ref_id       INT AUTO_INCREMENT PRIMARY KEY,
     display_name VARCHAR(64)  NOT NULL,
     group_metadata JSON NULL
