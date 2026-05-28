@@ -29,8 +29,8 @@ public class FieldDefinitionsService {
         this.systemLanguagesRepository = systemLanguagesRepository;
     }
 
-    public List<FieldDefinitionsEntity> getCustomFields() {
-        return fieldDefinitionsRepository.findByIsSystemFalseOrderByDisplayOrder();
+    public List<FieldDefinitionsEntity> getCustomFields(String entityType) {
+        return fieldDefinitionsRepository.findByEntityTypeAndIsSystemFalseOrderByDisplayOrder(entityType);
     }
 
     public void setListVisibility(Long id, boolean visible) {
@@ -40,10 +40,10 @@ public class FieldDefinitionsService {
         });
     }
 
-    public Map<String, String> getFieldTranslations(String langCode) {
+    public Map<String, String> getFieldTranslations(String langCode, String translationType) {
         Map<String, String> result = new HashMap<>();
         Optional<List<DynamicTranslationsEntity>> entries =
-                dynamicTranslationsRepository.findAllByLangCodeAndType(langCode, "user_fields");
+                dynamicTranslationsRepository.findAllByLangCodeAndType(langCode, translationType);
         entries.ifPresent(list -> list.forEach(e -> result.put(e.getTranslationKey(), e.getTranslatedText())));
         return result;
     }
@@ -51,7 +51,10 @@ public class FieldDefinitionsService {
     @Transactional
     public void addFieldDefinition(FieldDefinitionDto dto) {
         FieldDefinitionsEntity field = new FieldDefinitionsEntity();
-        field.setEntityType(dto.getEntityType() != null ? dto.getEntityType() : "user");
+        String entityType = dto.getEntityType() != null ? dto.getEntityType() : "user";
+        String translationType = entityType + "_fields";
+
+        field.setEntityType(entityType);
         field.setFieldKey(dto.getFieldKey());
         field.setFieldType(dto.getFieldType());
         field.setListVisible(false);
@@ -66,7 +69,7 @@ public class FieldDefinitionsService {
             DynamicTranslationsEntity translation = new DynamicTranslationsEntity();
             translation.setLangCode(lang.getCode());
             translation.setTranslationKey(dto.getFieldKey());
-            translation.setType("user_fields");
+            translation.setType(translationType);
             translation.setTranslatedText("en".equals(lang.getCode()) ? dto.getLabel() : "");
             translation.setUpdateData(LocalDateTime.now());
             translations.add(translation);
@@ -76,37 +79,35 @@ public class FieldDefinitionsService {
 
     @Transactional
     public void updateFieldTranslations(UpdateTranslationsRequestDto dto) {
+        String translationType = dto.getType() != null ? dto.getType() : "user_fields";
+
         List<DynamicTranslationsEntity> allForLang = dynamicTranslationsRepository.findByLangCode(dto.getLang());
 
-        // All existing keys regardless of type — used to avoid duplicate-key violations
-        Set<String> allExistingKeys = new HashSet<>();
-        Map<String, DynamicTranslationsEntity> userFieldsByKey = new HashMap<>();
+        // Index only rows belonging to this translation type
+        Map<String, DynamicTranslationsEntity> fieldsByKey = new HashMap<>();
         for (DynamicTranslationsEntity e : allForLang) {
-            allExistingKeys.add(e.getTranslationKey());
-            if ("user_fields".equals(e.getType())) {
-                userFieldsByKey.put(e.getTranslationKey(), e);
+            if (translationType.equals(e.getType())) {
+                fieldsByKey.put(e.getTranslationKey(), e);
             }
         }
 
         List<DynamicTranslationsEntity> toSave = new ArrayList<>();
         for (Map.Entry<String, String> entry : dto.getTranslations().entrySet()) {
             String key = entry.getKey();
-            DynamicTranslationsEntity existing = userFieldsByKey.get(key);
+            DynamicTranslationsEntity existing = fieldsByKey.get(key);
             if (existing != null) {
                 existing.setTranslatedText(entry.getValue());
                 existing.setUpdateData(LocalDateTime.now());
                 toSave.add(existing);
-            } else if (!allExistingKeys.contains(key)) {
-                // Truly new key (pre-seeded field with no translation row yet) — safe to insert
+            } else {
                 DynamicTranslationsEntity newEntity = new DynamicTranslationsEntity();
                 newEntity.setLangCode(dto.getLang());
                 newEntity.setTranslationKey(key);
                 newEntity.setTranslatedText(entry.getValue());
-                newEntity.setType("user_fields");
+                newEntity.setType(translationType);
                 newEntity.setUpdateData(LocalDateTime.now());
                 toSave.add(newEntity);
             }
-            // key exists with a different type (e.g. 'system') — skip to avoid duplicate-key error
         }
 
         dynamicTranslationsRepository.saveAll(toSave);

@@ -21,8 +21,9 @@ public class FieldDefinitionsController {
     }
 
     @GetMapping
-    public List<FieldDefinitionsEntity> getCustomFields() {
-        return fieldDefinitionsService.getCustomFields();
+    public List<FieldDefinitionsEntity> getCustomFields(
+            @RequestParam(defaultValue = "user") String entityType) {
+        return fieldDefinitionsService.getCustomFields(entityType);
     }
 
     @PostMapping
@@ -31,8 +32,10 @@ public class FieldDefinitionsController {
     }
 
     @GetMapping("/translations/{lang}")
-    public Map<String, String> getFieldTranslations(@PathVariable String lang) {
-        return fieldDefinitionsService.getFieldTranslations(lang);
+    public Map<String, String> getFieldTranslations(
+            @PathVariable String lang,
+            @RequestParam(defaultValue = "user_fields") String translationType) {
+        return fieldDefinitionsService.getFieldTranslations(lang, translationType);
     }
 
     @PostMapping("/translations/update")

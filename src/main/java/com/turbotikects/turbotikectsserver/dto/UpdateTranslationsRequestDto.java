@@ -10,4 +10,5 @@ import java.util.Map;
 public class UpdateTranslationsRequestDto {
     private String lang;
     private Map<String, String> translations;
+    private String type;
 }
