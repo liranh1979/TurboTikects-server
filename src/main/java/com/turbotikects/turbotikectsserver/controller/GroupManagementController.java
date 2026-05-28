@@ -1,7 +1,9 @@
 package com.turbotikects.turbotikectsserver.controller;
 
+import com.turbotikects.turbotikectsserver.dto.BulkGroupMembershipDto;
 import com.turbotikects.turbotikectsserver.dto.CreateGroupDto;
 import com.turbotikects.turbotikectsserver.dto.GroupListItemDto;
+import com.turbotikects.turbotikectsserver.dto.GroupMemberDto;
 import com.turbotikects.turbotikectsserver.dto.UpdateGroupDto;
 import com.turbotikects.turbotikectsserver.services.GroupManagementService;
 import org.springframework.http.HttpStatus;
@@ -46,6 +48,40 @@ public class GroupManagementController {
     @PostMapping("/sync-metadata")
     public Map<String, String> syncMetadata() {
         String taskId = groupManagementService.startSyncMetadata();
+        return Map.of("taskId", taskId);
+    }
+
+    @GetMapping("/{id}/members")
+    public List<GroupMemberDto> getMembers(@PathVariable Long id) {
+        return groupManagementService.getGroupMembers(id);
+    }
+
+    @PostMapping("/{id}/members")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void addMembers(@PathVariable Long id, @RequestBody List<Long> userIds) {
+        groupManagementService.addMembers(id, userIds);
+    }
+
+    @DeleteMapping("/{id}/members")
+    @ResponseStatus(HttpStatus.NO_CONTENT)
+    public void removeMembers(@PathVariable Long id, @RequestBody List<Long> userIds) {
+        groupManagementService.removeMembers(id, userIds);
+    }
+
+    @GetMapping("/by-user/{userId}")
+    public List<GroupListItemDto> getGroupsForUser(@PathVariable Long userId) {
+        return groupManagementService.getGroupsForUser(userId);
+    }
+
+    @PostMapping("/bulk-add")
+    public Map<String, String> bulkAddToGroups(@RequestBody BulkGroupMembershipDto dto) {
+        String taskId = groupManagementService.bulkAddToGroups(dto);
+        return Map.of("taskId", taskId);
+    }
+
+    @PostMapping("/bulk-remove")
+    public Map<String, String> bulkRemoveFromGroups(@RequestBody BulkGroupMembershipDto dto) {
+        String taskId = groupManagementService.bulkRemoveFromGroups(dto);
         return Map.of("taskId", taskId);
     }
 }
