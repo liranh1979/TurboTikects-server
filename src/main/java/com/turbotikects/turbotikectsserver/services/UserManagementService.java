@@ -102,7 +102,8 @@ public class UserManagementService {
 
     public String startSyncMetadata() {
         List<UserEntity> users = userRepository.findAll();
-        List<FieldDefinitionsEntity> fields = fieldDefinitionsRepository.findByIsSystemFalseOrderByDisplayOrder();
+        List<FieldDefinitionsEntity> fields = fieldDefinitionsRepository
+                .findByEntityTypeAndIsSystemFalseOrderByDisplayOrder("user");
 
         String taskId = taskProgressService.createTask("Sync User Metadata", users.size());
 
