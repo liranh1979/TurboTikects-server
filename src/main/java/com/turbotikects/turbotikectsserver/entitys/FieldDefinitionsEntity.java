@@ -3,8 +3,11 @@ package com.turbotikects.turbotikectsserver.entitys;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.persistence.*;
 import lombok.Data;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 import java.time.LocalDateTime;
+import java.util.List;
 
 @Entity
 @Table(name = "field_definitions")
@@ -38,6 +41,10 @@ public class FieldDefinitionsEntity {
     @JsonProperty("isSystem")
     @Column(name = "is_system")
     private boolean isSystem;
+
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "field_options", columnDefinition = "json")
+    private List<String> fieldOptions;
 
     @Column(name = "created_at")
     private LocalDateTime createdAt;

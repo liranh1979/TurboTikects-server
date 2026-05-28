@@ -8,6 +8,7 @@ import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
 import java.util.Map;
+import java.util.ArrayList;
 
 @CrossOrigin(origins = "${app.cors.origins}")
 @RestController
@@ -46,5 +47,10 @@ public class FieldDefinitionsController {
     @PatchMapping("/{id}/list-visibility")
     public void setListVisibility(@PathVariable Long id, @RequestParam boolean visible) {
         fieldDefinitionsService.setListVisibility(id, visible);
+    }
+
+    @PatchMapping("/{id}/options")
+    public void updateFieldOptions(@PathVariable Long id, @RequestBody List<String> options) {
+        fieldDefinitionsService.updateFieldOptions(id, options);
     }
 }

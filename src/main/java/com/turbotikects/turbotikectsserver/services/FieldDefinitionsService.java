@@ -57,6 +57,7 @@ public class FieldDefinitionsService {
         field.setEntityType(entityType);
         field.setFieldKey(dto.getFieldKey());
         field.setFieldType(dto.getFieldType());
+        field.setFieldOptions(dto.getFieldOptions());
         field.setListVisible(false);
         field.setDetailVisible(true);
         field.setSystem(false);
@@ -75,6 +76,13 @@ public class FieldDefinitionsService {
             translations.add(translation);
         }
         dynamicTranslationsRepository.saveAll(translations);
+    }
+
+    public void updateFieldOptions(Long id, List<String> options) {
+        fieldDefinitionsRepository.findById(id).ifPresent(f -> {
+            f.setFieldOptions(options);
+            fieldDefinitionsRepository.save(f);
+        });
     }
 
     @Transactional
