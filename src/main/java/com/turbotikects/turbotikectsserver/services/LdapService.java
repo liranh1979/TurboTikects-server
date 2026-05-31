@@ -6,19 +6,23 @@ import com.turbotikects.turbotikectsserver.entitys.LdapFieldMappingEntity;
 import com.turbotikects.turbotikectsserver.repositorys.LdapConfigRepository;
 import com.turbotikects.turbotikectsserver.repositorys.LdapFieldMappingRepository;
 import com.turbotikects.turbotikectsserver.utils.AesEncryptionUtils;
+import org.springframework.ldap.core.DirContextOperations;
 import org.springframework.ldap.core.LdapTemplate;
+import org.springframework.ldap.core.support.AbstractContextMapper;
 import org.springframework.ldap.core.support.LdapContextSource;
 import org.springframework.ldap.query.LdapQueryBuilder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import javax.naming.NamingEnumeration;
+import javax.naming.NamingException;
 import javax.naming.directory.Attribute;
 import javax.naming.directory.Attributes;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
 @Service
 public class LdapService {
@@ -201,6 +205,88 @@ public class LdapService {
         dto.setLdapAttribute(entity.getLdapAttribute());
         dto.setSystemFieldKey(entity.getSystemFieldKey());
         return dto;
+    }
+
+    // ── Authentication ────────────────────────────────────────────────────────
+
+    /**
+     * Verify a user's credentials by binding directly with their LDAP DN and password.
+     * Used for synced users (source_type=1) whose DN is stored in ldap_external_id.
+     */
+    public boolean authenticateUserByDn(String dn, String password, LdapConfigEntity config) {
+        try {
+            LdapContextSource ctx = buildContextSource(
+                    config.getHost(), config.getPort(), config.isUseSsl(), dn, password);
+            ctx.getContext(dn, password).close();
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /**
+     * Search for a user entry in LDAP by username (for JIT provisioning).
+     * Returns the full attribute map including "__dn__" if a match is found.
+     */
+    public Optional<Map<String, String>> findUserInLdap(String username, LdapConfigEntity config) {
+        try {
+            String svcPwd = aes.decrypt(config.getBindPassword());
+            LdapContextSource ctx = buildContextSource(
+                    config.getHost(), config.getPort(), config.isUseSsl(), config.getBindDn(), svcPwd);
+            LdapTemplate ldap = new LdapTemplate(ctx);
+            ldap.setIgnorePartialResultException(true);
+
+            // Determine which LDAP attribute maps to the system "username" field
+            List<LdapFieldMappingEntity> mappings =
+                    mappingRepository.findByLdapConfigIdAndEntityType(config.getId(), "user");
+            String usernameAttr = mappings.stream()
+                    .filter(m -> "username".equals(m.getSystemFieldKey()))
+                    .map(LdapFieldMappingEntity::getLdapAttribute)
+                    .findFirst().orElse(null);
+
+            String esc = escapeLdapFilterValue(username);
+            String uf = usernameAttr != null
+                    ? "(" + usernameAttr + "=" + esc + ")"
+                    : "(|(sAMAccountName=" + esc + ")(uid=" + esc + ")(cn=" + esc + "))";
+            String filter = "(&" + config.getUserFilter() + uf + ")";
+
+            List<Map<String, String>> results = ldap.search(
+                    LdapQueryBuilder.query().base(config.getBaseDnUsers()).filter(filter),
+                    new AbstractContextMapper<Map<String, String>>() {
+                        @Override
+                        protected Map<String, String> doMapFromContext(DirContextOperations ctx) {
+                            Map<String, String> entry = new LinkedHashMap<>();
+                            entry.put("__dn__", ctx.getNameInNamespace());
+                            try {
+                                NamingEnumeration<String> ids = ctx.getAttributes().getIDs();
+                                while (ids.hasMore()) {
+                                    String id = ids.next();
+                                    Attribute attr = ctx.getAttributes().get(id);
+                                    if (attr == null) continue;
+                                    StringBuilder sb = new StringBuilder();
+                                    NamingEnumeration<?> vals = attr.getAll();
+                                    while (vals.hasMore()) {
+                                        Object v = vals.next();
+                                        if (v instanceof byte[]) continue;
+                                        if (sb.length() > 0) sb.append('\n');
+                                        sb.append(v);
+                                    }
+                                    if (sb.length() > 0) entry.put(id, sb.toString());
+                                }
+                            } catch (NamingException ignored) {}
+                            return entry;
+                        }
+                    });
+
+            return results.isEmpty() ? Optional.empty() : Optional.of(results.get(0));
+        } catch (Exception e) {
+            return Optional.empty();
+        }
+    }
+
+    private static String escapeLdapFilterValue(String value) {
+        return value.replace("\\", "\\5c").replace("*", "\\2a")
+                    .replace("(", "\\28").replace(")", "\\29").replace("\0", "\\00");
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

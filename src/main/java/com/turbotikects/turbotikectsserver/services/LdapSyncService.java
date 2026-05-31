@@ -106,7 +106,7 @@ public class LdapSyncService {
                 if (existing.isPresent()) {
                     updateUser(existing.get(), attrs, mappings);
                 } else {
-                    createUser(attrs, mappings, dn);
+                    createLdapUser(attrs, mappings, dn);
                 }
             } catch (Exception e) {
                 // Log and continue — one bad record should not abort the whole sync
@@ -128,7 +128,7 @@ public class LdapSyncService {
         }
     }
 
-    private void createUser(Map<String, String> attrs, List<LdapFieldMappingEntity> mappings, String dn) {
+    public UserEntity createLdapUser(Map<String, String> attrs, List<LdapFieldMappingEntity> mappings, String dn) {
         String username = resolveBuiltIn(attrs, mappings, "username");
         if (username == null || username.isBlank()) {
             username = attrs.getOrDefault("sAMAccountName",
@@ -149,14 +149,14 @@ public class LdapSyncService {
         user.setLdapExternalId(dn);
         user.setSourceType(1);
         user.setSuperAdmin(false);
-        // Non-guessable placeholder — LDAP users cannot log in via the form
+        // Non-guessable placeholder — LDAP users authenticate via LDAP bind, not this hash
         user.setPassword(HashUtils.sha1(UUID.randomUUID() + "_ldap_" + dn));
 
         Map<String, Object> metadata = new HashMap<>();
         applyCustomMappings(metadata, attrs, mappings);
         if (!metadata.isEmpty()) user.setMetadata(metadata);
 
-        userRepository.save(user);
+        return userRepository.save(user);
     }
 
     private void updateUser(UserEntity user, Map<String, String> attrs, List<LdapFieldMappingEntity> mappings) {
