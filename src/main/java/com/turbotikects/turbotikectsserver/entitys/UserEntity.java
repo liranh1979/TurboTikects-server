@@ -33,4 +33,10 @@ public class UserEntity {
     @Column( name = "user_metadata", columnDefinition = "json")
     private Map<String, Object> metadata;
 
+    @Column(name = "source_type", nullable = false)
+    private int sourceType = 0;
+
+    @Column(name = "ldap_external_id")
+    private String ldapExternalId;
+
 }

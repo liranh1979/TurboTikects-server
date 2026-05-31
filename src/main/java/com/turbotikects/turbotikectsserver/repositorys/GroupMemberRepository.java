@@ -20,4 +20,9 @@ public interface GroupMemberRepository extends JpaRepository<GroupMemberEntity, 
     @Transactional
     @Query("DELETE FROM GroupMemberEntity m WHERE m.groupId = :groupId AND m.userId IN :userIds")
     void deleteByGroupIdAndUserIdIn(@Param("groupId") Long groupId, @Param("userIds") List<Long> userIds);
+
+    @Modifying
+    @Transactional
+    @Query("DELETE FROM GroupMemberEntity m WHERE m.groupId = :groupId")
+    void deleteAllByGroupId(@Param("groupId") Long groupId);
 }
