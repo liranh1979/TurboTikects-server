@@ -50,7 +50,7 @@ public class AzureMappingService {
             return errorResult("No Azure AD sample data found for entity type: " + entityType);
         }
 
-        // 2. Load custom field definitions + English labels
+        // 2. Load custom field definitions + English labels (type = user_fields / group_fields)
         List<FieldDefinitionsEntity> fields =
                 fieldDefinitionsRepository.findByEntityTypeAndIsSystemFalseOrderByDisplayOrder(entityType);
 

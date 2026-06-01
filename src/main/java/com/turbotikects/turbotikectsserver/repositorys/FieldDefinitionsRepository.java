@@ -8,4 +8,5 @@ import java.util.List;
 public interface FieldDefinitionsRepository extends JpaRepository<FieldDefinitionsEntity, Long> {
     List<FieldDefinitionsEntity> findByIsSystemFalseOrderByDisplayOrder();
     List<FieldDefinitionsEntity> findByEntityTypeAndIsSystemFalseOrderByDisplayOrder(String entityType);
+    List<FieldDefinitionsEntity> findByEntityTypeOrderByDisplayOrder(String entityType);
 }
