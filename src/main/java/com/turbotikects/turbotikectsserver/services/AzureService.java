@@ -242,21 +242,22 @@ public class AzureService {
         entityManager.flush();  // send DELETE to DB before INSERT batch runs
         entityManager.clear();  // evict stale entities from first-level cache
 
-        List<AzureFieldMappingEntity> toSave = new ArrayList<>();
+        // Use LinkedHashMap to deduplicate by azureAttribute (last mapping wins)
+        Map<String, AzureFieldMappingEntity> byAttr = new LinkedHashMap<>();
         if (dto.getMappings() != null) {
             for (AzureFieldMappingDto m : dto.getMappings()) {
-                if (m.getSystemFieldKey() == null || m.getSystemFieldKey().isBlank()) {
-                    continue;
-                }
+                if (m.getSystemFieldKey() == null || m.getSystemFieldKey().isBlank()) continue;
+                if (m.getAzureAttribute() == null || m.getAzureAttribute().isBlank()) continue;
                 AzureFieldMappingEntity entity = new AzureFieldMappingEntity();
                 entity.setAzureConfigId(configId);
                 entity.setEntityType(entityType);
                 entity.setAzureAttribute(m.getAzureAttribute());
                 entity.setSystemFieldKey(m.getSystemFieldKey());
-                toSave.add(entity);
+                byAttr.put(m.getAzureAttribute(), entity);
             }
         }
-        return mappingRepository.saveAll(toSave).stream().map(this::toMappingDto).toList();
+        return mappingRepository.saveAll(new ArrayList<>(byAttr.values()))
+                .stream().map(this::toMappingDto).toList();
     }
 
     // ── Authentication (ROPC) ─────────────────────────────────────────────────
