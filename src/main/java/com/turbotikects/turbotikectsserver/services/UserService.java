@@ -2,9 +2,13 @@ package com.turbotikects.turbotikectsserver.services;
 
 import com.turbotikects.turbotikectsserver.dto.LoginRequest;
 import com.turbotikects.turbotikectsserver.dto.UserDto;
+import com.turbotikects.turbotikectsserver.entitys.AzureConfigEntity;
+import com.turbotikects.turbotikectsserver.entitys.AzureFieldMappingEntity;
 import com.turbotikects.turbotikectsserver.entitys.LdapConfigEntity;
 import com.turbotikects.turbotikectsserver.entitys.LdapFieldMappingEntity;
 import com.turbotikects.turbotikectsserver.entitys.UserEntity;
+import com.turbotikects.turbotikectsserver.repositorys.AzureConfigRepository;
+import com.turbotikects.turbotikectsserver.repositorys.AzureFieldMappingRepository;
 import com.turbotikects.turbotikectsserver.repositorys.LdapConfigRepository;
 import com.turbotikects.turbotikectsserver.repositorys.LdapFieldMappingRepository;
 import com.turbotikects.turbotikectsserver.repositorys.UserRepository;
@@ -29,19 +33,31 @@ public class UserService {
     private final LdapFieldMappingRepository ldapFieldMappingRepository;
     private final LdapService ldapService;
     private final LdapSyncService ldapSyncService;
+    private final AzureConfigRepository azureConfigRepository;
+    private final AzureFieldMappingRepository azureFieldMappingRepository;
+    private final AzureService azureService;
+    private final AzureSyncService azureSyncService;
 
     public UserService(UserRepository userRepository,
                        @Lazy PermissionService permissionService,
                        LdapConfigRepository ldapConfigRepository,
                        LdapFieldMappingRepository ldapFieldMappingRepository,
                        LdapService ldapService,
-                       LdapSyncService ldapSyncService) {
+                       LdapSyncService ldapSyncService,
+                       AzureConfigRepository azureConfigRepository,
+                       AzureFieldMappingRepository azureFieldMappingRepository,
+                       AzureService azureService,
+                       AzureSyncService azureSyncService) {
         this.userRepository = userRepository;
         this.permissionService = permissionService;
         this.ldapConfigRepository = ldapConfigRepository;
         this.ldapFieldMappingRepository = ldapFieldMappingRepository;
         this.ldapService = ldapService;
         this.ldapSyncService = ldapSyncService;
+        this.azureConfigRepository = azureConfigRepository;
+        this.azureFieldMappingRepository = azureFieldMappingRepository;
+        this.azureService = azureService;
+        this.azureSyncService = azureSyncService;
     }
 
     public UserDto login(LoginRequest req) {
@@ -58,6 +74,12 @@ public class UserService {
                         .anyMatch(cfg -> ldapService.authenticateUserByDn(
                                 user.getLdapExternalId(), password, cfg));
                 if (!ok) throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Invalid credentials");
+            } else if (user.getSourceType() == 2) {
+                // Azure AD user: authenticate via ROPC with stored Azure ID (UPN)
+                String upn = user.getAzureExternalId() != null ? user.getAzureExternalId() : username;
+                boolean ok = azureConfigRepository.findByIsActiveTrue().stream()
+                        .anyMatch(cfg -> azureService.authenticateUser(upn, password, cfg));
+                if (!ok) throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Invalid credentials");
             } else {
                 // Local user: SHA-1 check
                 String hash = HashUtils.sha1(username + "_" + password);
@@ -67,7 +89,7 @@ public class UserService {
             return buildUserDto(user);
         }
 
-        // Path 2: JIT — user not in DB yet; search active LDAP configs
+        // Path 2a: JIT — search active LDAP configs
         for (LdapConfigEntity cfg : ldapConfigRepository.findByIsActiveTrue()) {
             Optional<Map<String, String>> ldapAttrs = ldapService.findUserInLdap(username, cfg);
             if (ldapAttrs.isPresent()) {
@@ -76,6 +98,21 @@ public class UserService {
                     List<LdapFieldMappingEntity> mappings =
                             ldapFieldMappingRepository.findByLdapConfigIdAndEntityType(cfg.getId(), "user");
                     UserEntity provisioned = ldapSyncService.createLdapUser(ldapAttrs.get(), mappings, dn);
+                    return buildUserDto(provisioned);
+                }
+            }
+        }
+
+        // Path 2b: JIT — search active Azure AD configs
+        for (AzureConfigEntity cfg : azureConfigRepository.findByIsActiveTrue()) {
+            Optional<Map<String, String>> azureAttrs = azureService.findUserInAzure(username, cfg);
+            if (azureAttrs.isPresent()) {
+                String upn = azureAttrs.get().getOrDefault("userPrincipalName", username);
+                if (azureService.authenticateUser(upn, password, cfg)) {
+                    String azureId = azureAttrs.get().get("id");
+                    List<AzureFieldMappingEntity> mappings =
+                            azureFieldMappingRepository.findByAzureConfigIdAndEntityType(cfg.getId(), "user");
+                    UserEntity provisioned = azureSyncService.createAzureUser(azureAttrs.get(), mappings, azureId);
                     return buildUserDto(provisioned);
                 }
             }

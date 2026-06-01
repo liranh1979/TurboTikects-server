@@ -39,4 +39,7 @@ public class UserEntity {
     @Column(name = "ldap_external_id")
     private String ldapExternalId;
 
+    @Column(name = "azure_external_id")
+    private String azureExternalId;
+
 }

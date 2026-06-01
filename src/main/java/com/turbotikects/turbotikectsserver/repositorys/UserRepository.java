@@ -14,5 +14,7 @@ public interface UserRepository extends JpaRepository<UserEntity, Long> {
 
     Optional<UserEntity> findByLdapExternalId(String ldapExternalId);
 
+    Optional<UserEntity> findByAzureExternalId(String azureExternalId);
+
     List<UserEntity> findBySourceType(int sourceType);
 }
