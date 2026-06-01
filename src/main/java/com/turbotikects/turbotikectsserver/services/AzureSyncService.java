@@ -220,7 +220,7 @@ public class AzureSyncService {
         String deltaLink = config.getGroupDeltaLink();
         String nextUrl = (deltaLink != null && !deltaLink.isBlank())
                 ? deltaLink
-                : GRAPH_BASE + "/groups/delta?$select=" + GROUP_SELECT + "&$expand=members($select=id)";
+                : GRAPH_BASE + "/groups/delta?$select=" + GROUP_SELECT;
 
         int processed = 0;
         String finalDeltaLink = null;
@@ -251,6 +251,7 @@ public class AzureSyncService {
                                     return g;
                                 });
 
+                        String azureGroupId = item.path("id").asText(null);
                         Map<String, String> attrs = nodeToMap(item);
                         Map<String, Object> metadata = group.getMetadata() != null
                                 ? new HashMap<>(group.getMetadata()) : new HashMap<>();
@@ -258,10 +259,9 @@ public class AzureSyncService {
                         group.setMetadata(metadata.isEmpty() ? null : metadata);
                         group = groupRepository.save(group);
 
-                        // Sync members via Azure object IDs
-                        JsonNode membersNode = item.get("members");
-                        if (membersNode != null && membersNode.isArray()) {
-                            syncGroupMembers(group.getRefId(), membersNode);
+                        // Fetch current members directly — $expand on delta returns members@delta, not members
+                        if (azureGroupId != null) {
+                            fetchAndSyncGroupMembers(group.getRefId(), azureGroupId, token);
                         }
                     } catch (Exception ignored) {
                     }
@@ -285,24 +285,46 @@ public class AzureSyncService {
         return finalDeltaLink;
     }
 
-    private void syncGroupMembers(Long groupId, JsonNode membersNode) {
-        List<Long> memberUserIds = new ArrayList<>();
-        for (JsonNode member : membersNode) {
-            String azureId = member.path("id").asText(null);
-            if (azureId != null) {
-                userRepository.findByAzureExternalId(azureId)
-                        .ifPresent(u -> memberUserIds.add(u.getRed_id()));
+    private void fetchAndSyncGroupMembers(Long groupId, String azureGroupId, String token) {
+        try {
+            List<Long> memberUserIds = new ArrayList<>();
+            String url = GRAPH_BASE + "/groups/" + azureGroupId + "/members?$select=id&$top=999";
+
+            while (url != null) {
+                HttpRequest req = HttpRequest.newBuilder()
+                        .uri(URI.create(url))
+                        .header("Authorization", "Bearer " + token)
+                        .GET()
+                        .build();
+                HttpResponse<String> res = httpClient.send(req, HttpResponse.BodyHandlers.ofString());
+                if (res.statusCode() != 200) return;
+
+                JsonNode root = objectMapper.readTree(res.body());
+                JsonNode values = root.get("value");
+                if (values != null && values.isArray()) {
+                    for (JsonNode member : values) {
+                        String azureId = member.path("id").asText(null);
+                        if (azureId != null) {
+                            userRepository.findByAzureExternalId(azureId)
+                                    .ifPresent(u -> memberUserIds.add(u.getRed_id()));
+                        }
+                    }
+                }
+                JsonNode nextLink = root.get("@odata.nextLink");
+                url = nextLink != null ? nextLink.asText() : null;
             }
-        }
-        groupMemberRepository.deleteAllByGroupId(groupId);
-        for (Long userId : memberUserIds) {
-            GroupMemberEntity m = new GroupMemberEntity();
-            m.setGroupId(groupId);
-            m.setUserId(userId);
-            try {
-                groupMemberRepository.save(m);
-            } catch (Exception ignored) {
+
+            groupMemberRepository.deleteAllByGroupId(groupId);
+            for (Long userId : memberUserIds) {
+                GroupMemberEntity m = new GroupMemberEntity();
+                m.setGroupId(groupId);
+                m.setUserId(userId);
+                try {
+                    groupMemberRepository.save(m);
+                } catch (Exception ignored) {
+                }
             }
+        } catch (Exception ignored) {
         }
     }
 
