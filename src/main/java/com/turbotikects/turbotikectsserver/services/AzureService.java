@@ -8,6 +8,8 @@ import com.turbotikects.turbotikectsserver.entitys.AzureFieldMappingEntity;
 import com.turbotikects.turbotikectsserver.repositorys.AzureConfigRepository;
 import com.turbotikects.turbotikectsserver.repositorys.AzureFieldMappingRepository;
 import com.turbotikects.turbotikectsserver.utils.AesEncryptionUtils;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceContext;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -25,6 +27,9 @@ public class AzureService {
 
     private static final String GRAPH_BASE = "https://graph.microsoft.com/v1.0";
     private static final String TOKEN_ENDPOINT = "https://login.microsoftonline.com/%s/oauth2/v2.0/token";
+
+    @PersistenceContext
+    private EntityManager entityManager;
 
     private final AzureConfigRepository configRepository;
     private final AzureFieldMappingRepository mappingRepository;
@@ -234,6 +239,8 @@ public class AzureService {
     public List<AzureFieldMappingDto> saveMappings(Long configId, SaveAzureMappingsRequestDto dto) {
         String entityType = dto.getEntityType();
         mappingRepository.deleteByAzureConfigIdAndEntityType(configId, entityType);
+        entityManager.flush();  // send DELETE to DB before INSERT batch runs
+        entityManager.clear();  // evict stale entities from first-level cache
 
         List<AzureFieldMappingEntity> toSave = new ArrayList<>();
         if (dto.getMappings() != null) {
