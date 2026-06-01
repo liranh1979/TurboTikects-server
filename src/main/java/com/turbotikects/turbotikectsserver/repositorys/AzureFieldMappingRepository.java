@@ -14,7 +14,7 @@ public interface AzureFieldMappingRepository extends JpaRepository<AzureFieldMap
 
     List<AzureFieldMappingEntity> findByAzureConfigIdAndEntityType(Long configId, String entityType);
 
-    @Modifying
+    @Modifying(flushAutomatically = true, clearAutomatically = true)
     @Transactional
     @Query("DELETE FROM AzureFieldMappingEntity m WHERE m.azureConfigId = :configId AND m.entityType = :entityType")
     void deleteByAzureConfigIdAndEntityType(Long configId, String entityType);
