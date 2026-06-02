@@ -53,16 +53,22 @@ public class AzureSyncService {
         this.httpClient = HttpClient.newHttpClient();
     }
 
-    public String startSync(Long configId) {
+    public String startSync(Long configId, boolean full) {
         String taskId = taskProgressService.createTask("Azure AD Sync", 100);
-        new Thread(() -> runSync(configId, taskId)).start();
+        new Thread(() -> runSync(configId, taskId, full)).start();
         return taskId;
     }
 
-    public void runSync(Long configId, String taskId) {
+    public void runSync(Long configId, String taskId, boolean full) {
         try {
             AzureConfigEntity config = configRepository.findById(configId)
                     .orElseThrow(() -> new RuntimeException("Azure config not found: " + configId));
+
+            if (full) {
+                log.info("Full sync requested for config {} — clearing delta links", configId);
+                config.setUserDeltaLink(null);
+                config.setGroupDeltaLink(null);
+            }
 
             taskProgressService.updateProgress(taskId, 5, "Loading field mappings…");
             List<AzureFieldMappingEntity> userMappings =
@@ -73,12 +79,11 @@ public class AzureSyncService {
             taskProgressService.updateProgress(taskId, 10, "Getting access token…");
             String token = azureService.getAccessToken(config);
 
-            taskProgressService.updateProgress(taskId, 15, "Syncing users…");
+            taskProgressService.updateProgress(taskId, 15, full ? "Full sync — syncing all users…" : "Syncing users (delta)…");
             String newUserDeltaLink = syncUsers(config, token, userMappings, taskId);
 
-            String newGroupDeltaLink = null;
-            taskProgressService.updateProgress(taskId, 65, "Syncing groups…");
-            newGroupDeltaLink = syncGroups(config, token, groupMappings, taskId);
+            taskProgressService.updateProgress(taskId, 65, full ? "Full sync — syncing all groups + members…" : "Syncing groups (delta)…");
+            String newGroupDeltaLink = syncGroups(config, token, groupMappings, taskId);
 
             azureService.saveDeltaLinks(configId, newUserDeltaLink, newGroupDeltaLink);
             azureService.updateLastSynced(configId, LocalDateTime.now());

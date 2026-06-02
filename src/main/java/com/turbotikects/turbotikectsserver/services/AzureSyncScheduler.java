@@ -18,6 +18,6 @@ public class AzureSyncScheduler {
     @Scheduled(fixedRate = 86_400_000) // 24 hours
     public void syncAll() {
         configRepository.findByIsActiveTrue()
-                .forEach(cfg -> syncService.startSync(cfg.getId()));
+                .forEach(cfg -> syncService.startSync(cfg.getId(), false));
     }
 }

@@ -98,8 +98,9 @@ public class AzureController {
     }
 
     @PostMapping("/configs/{id}/sync")
-    public Map<String, String> triggerSync(@PathVariable Long id) {
-        String taskId = azureSyncService.startSync(id);
+    public Map<String, String> triggerSync(@PathVariable Long id,
+                                           @RequestParam(defaultValue = "true") boolean full) {
+        String taskId = azureSyncService.startSync(id, full);
         return Map.of("taskId", taskId);
     }
 }
