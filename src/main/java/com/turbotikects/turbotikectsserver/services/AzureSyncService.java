@@ -5,6 +5,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.turbotikects.turbotikectsserver.entitys.*;
 import com.turbotikects.turbotikectsserver.repositorys.*;
 import com.turbotikects.turbotikectsserver.utils.HashUtils;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.net.URI;
@@ -16,6 +18,8 @@ import java.util.*;
 
 @Service
 public class AzureSyncService {
+
+    private static final Logger log = LoggerFactory.getLogger(AzureSyncService.class);
 
     private static final String GRAPH_BASE = "https://graph.microsoft.com/v1.0";
     private static final String USER_SELECT = "id,displayName,userPrincipalName,mail,givenName,surname,jobTitle,department,mobilePhone,officeLocation,accountEnabled";
@@ -259,16 +263,18 @@ public class AzureSyncService {
                         group.setMetadata(metadata.isEmpty() ? null : metadata);
                         group = groupRepository.save(group);
 
-                        // Fetch current members directly — $expand on delta returns members@delta, not members
+                        int membersAdded = 0;
                         if (azureGroupId != null) {
-                            fetchAndSyncGroupMembers(group.getRefId(), azureGroupId, token);
+                            membersAdded = fetchAndSyncGroupMembers(group.getRefId(), azureGroupId, token);
                         }
-                    } catch (Exception ignored) {
-                    }
 
-                    processed++;
-                    taskProgressService.updateProgress(taskId, Math.min(70 + processed, 95),
-                            "Processed " + processed + " groups");
+                        processed++;
+                        taskProgressService.updateProgress(taskId, Math.min(70 + processed, 95),
+                                "Processed " + processed + " groups, last: " + groupName + " (" + membersAdded + " members)");
+                    } catch (Exception e) {
+                        log.error("Error processing group: {}", e.getMessage(), e);
+                        processed++;
+                    }
                 }
             }
 
@@ -285,11 +291,12 @@ public class AzureSyncService {
         return finalDeltaLink;
     }
 
-    private void fetchAndSyncGroupMembers(Long groupId, String azureGroupId, String token) {
-        try {
-            List<Long> memberUserIds = new ArrayList<>();
-            String url = GRAPH_BASE + "/groups/" + azureGroupId + "/members?$select=id&$top=999";
+    private int fetchAndSyncGroupMembers(Long groupId, String azureGroupId, String token) {
+        List<Long> memberUserIds = new ArrayList<>();
+        int rawMemberCount = 0;
+        String url = GRAPH_BASE + "/groups/" + azureGroupId + "/members?$top=999";
 
+        try {
             while (url != null) {
                 HttpRequest req = HttpRequest.newBuilder()
                         .uri(URI.create(url))
@@ -297,35 +304,48 @@ public class AzureSyncService {
                         .GET()
                         .build();
                 HttpResponse<String> res = httpClient.send(req, HttpResponse.BodyHandlers.ofString());
-                if (res.statusCode() != 200) return;
+                if (res.statusCode() != 200) {
+                    log.warn("Members endpoint returned HTTP {} for group {} (dbId={}): {}",
+                            res.statusCode(), azureGroupId, groupId, res.body());
+                    return 0;
+                }
 
                 JsonNode root = objectMapper.readTree(res.body());
                 JsonNode values = root.get("value");
                 if (values != null && values.isArray()) {
                     for (JsonNode member : values) {
                         String azureId = member.path("id").asText(null);
-                        if (azureId != null) {
-                            userRepository.findByAzureExternalId(azureId)
-                                    .ifPresent(u -> memberUserIds.add(u.getRed_id()));
-                        }
+                        if (azureId == null) continue;
+                        rawMemberCount++;
+                        userRepository.findByAzureExternalId(azureId)
+                                .ifPresent(u -> memberUserIds.add(u.getRed_id()));
                     }
                 }
                 JsonNode nextLink = root.get("@odata.nextLink");
                 url = nextLink != null ? nextLink.asText() : null;
             }
-
-            groupMemberRepository.deleteAllByGroupId(groupId);
-            for (Long userId : memberUserIds) {
-                GroupMemberEntity m = new GroupMemberEntity();
-                m.setGroupId(groupId);
-                m.setUserId(userId);
-                try {
-                    groupMemberRepository.save(m);
-                } catch (Exception ignored) {
-                }
-            }
-        } catch (Exception ignored) {
+        } catch (Exception e) {
+            log.error("Error fetching members for group {} (dbId={}): {}", azureGroupId, groupId, e.getMessage(), e);
+            return 0;
         }
+
+        log.info("Group {} (dbId={}): {} Azure members, {} matched local users",
+                azureGroupId, groupId, rawMemberCount, memberUserIds.size());
+
+        groupMemberRepository.deleteAllByGroupId(groupId);
+        int saved = 0;
+        for (Long userId : memberUserIds) {
+            GroupMemberEntity m = new GroupMemberEntity();
+            m.setGroupId(groupId);
+            m.setUserId(userId);
+            try {
+                groupMemberRepository.save(m);
+                saved++;
+            } catch (Exception e) {
+                log.warn("Failed to save group member groupId={} userId={}: {}", groupId, userId, e.getMessage());
+            }
+        }
+        return saved;
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
