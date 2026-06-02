@@ -34,4 +34,13 @@ public class AzureConfigDto {
 
     @JsonProperty("is_active")
     private boolean isActive = false;
+
+    @JsonProperty("sso_enabled")
+    private boolean ssoEnabled = false;
+
+    @JsonProperty("sso_display_name")
+    private String ssoDisplayName;
+
+    @JsonProperty("saml_sp_entity_id")
+    private String samlSpEntityId;
 }

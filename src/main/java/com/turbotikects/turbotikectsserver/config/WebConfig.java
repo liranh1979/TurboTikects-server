@@ -24,8 +24,16 @@ public class WebConfig implements WebMvcConfigurer {
 
     @Override
     public void addCorsMappings(CorsRegistry registry) {
+        // SAML ACS endpoint receives POSTs from external IdPs (e.g. Azure AD).
+        // The IdP's Origin will never be in our allowed list, so permit all origins here.
+        registry.addMapping("/api/v1/saml2/**")
+                .allowedOriginPatterns("*")
+                .allowedMethods("GET", "POST")
+                .allowCredentials(false)
+                .maxAge(3600);
+
         registry.addMapping("/**")
-                .allowedOrigins(allowedOrigins)
+                .allowedOrigins(allowedOrigins.split(","))
                 .allowedMethods("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
                 .allowCredentials(true)
                 .maxAge(3600);
@@ -36,7 +44,9 @@ public class WebConfig implements WebMvcConfigurer {
         String[] publicPaths = {
             "/api/v1/auth/**",
             "/api/v1/locales/**",
-            "/api/v1/languages"
+            "/api/v1/languages",
+            "/api/v1/sso/**",
+            "/api/v1/saml2/**"
         };
 
         registry.addInterceptor(authInterceptor)

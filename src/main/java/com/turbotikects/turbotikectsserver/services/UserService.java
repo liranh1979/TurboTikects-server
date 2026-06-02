@@ -122,6 +122,10 @@ public class UserService {
         throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Invalid credentials");
     }
 
+    public UserDto loginByEntity(UserEntity user) {
+        return buildUserDto(user);
+    }
+
     private UserDto buildUserDto(UserEntity user) {
         UserDto dto = new UserDto();
         dto.setUsername(user.getUsername());

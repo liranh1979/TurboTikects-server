@@ -52,3 +52,22 @@ dependencies {
 tasks.named('test') {
     useJUnitPlatform()
 }
+
+def frontendDir = file("${projectDir}/../ticketmaster-client")
+
+task npmInstall(type: Exec) {
+    workingDir frontendDir
+    commandLine 'npm.cmd', 'install'
+    inputs.file("${frontendDir}/package.json")
+    outputs.dir("${frontendDir}/node_modules")
+}
+
+task npmBuild(type: Exec, dependsOn: npmInstall) {
+    workingDir frontendDir
+    commandLine 'npm.cmd', 'run', 'build'
+    inputs.dir("${frontendDir}/src")
+    inputs.file("${frontendDir}/package.json")
+    outputs.dir("${projectDir}/src/main/resources/static")
+}
+
+processResources.dependsOn(npmBuild)

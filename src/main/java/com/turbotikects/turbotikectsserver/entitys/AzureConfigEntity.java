@@ -44,6 +44,15 @@ public class AzureConfigEntity {
     @Column(name = "is_active", nullable = false)
     private boolean isActive = false;
 
+    @Column(name = "sso_enabled", nullable = false)
+    private boolean ssoEnabled = false;
+
+    @Column(name = "sso_display_name")
+    private String ssoDisplayName;
+
+    @Column(name = "saml_sp_entity_id")
+    private String samlSpEntityId;
+
     @Column(name = "created_at")
     private LocalDateTime createdAt;
 

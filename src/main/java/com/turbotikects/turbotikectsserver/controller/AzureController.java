@@ -5,6 +5,7 @@ import com.turbotikects.turbotikectsserver.security.RequirePermission;
 import com.turbotikects.turbotikectsserver.services.AzureMappingService;
 import com.turbotikects.turbotikectsserver.services.AzureService;
 import com.turbotikects.turbotikectsserver.services.AzureSyncService;
+import com.turbotikects.turbotikectsserver.services.SamlService;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
 
@@ -20,13 +21,16 @@ public class AzureController {
     private final AzureService azureService;
     private final AzureMappingService azureMappingService;
     private final AzureSyncService azureSyncService;
+    private final SamlService samlService;
 
     public AzureController(AzureService azureService,
                            AzureMappingService azureMappingService,
-                           AzureSyncService azureSyncService) {
+                           AzureSyncService azureSyncService,
+                           SamlService samlService) {
         this.azureService = azureService;
         this.azureMappingService = azureMappingService;
         this.azureSyncService = azureSyncService;
+        this.samlService = samlService;
     }
 
     @GetMapping("/configs")
@@ -103,4 +107,18 @@ public class AzureController {
         String taskId = azureSyncService.startSync(id, full);
         return Map.of("taskId", taskId);
     }
+
+    @GetMapping("/configs/{id}/test-saml")
+    public Map<String, Object> testSaml(@PathVariable Long id) {
+        return samlService.testMetadata(id);
+    }
+
+    @PatchMapping("/configs/{id}/sso")
+    public org.springframework.http.ResponseEntity<Void> setSso(@PathVariable Long id,
+                                                                 @RequestBody SetSsoRequest req) {
+        azureService.setSso(id, req.ssoEnabled(), req.ssoDisplayName(), req.samlSpEntityId());
+        return org.springframework.http.ResponseEntity.ok().build();
+    }
+
+    record SetSsoRequest(boolean ssoEnabled, String ssoDisplayName, String samlSpEntityId) {}
 }

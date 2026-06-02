@@ -8,4 +8,6 @@ import java.util.List;
 public interface AzureConfigRepository extends JpaRepository<AzureConfigEntity, Long> {
 
     List<AzureConfigEntity> findByIsActiveTrue();
+
+    List<AzureConfigEntity> findBySsoEnabledTrue();
 }

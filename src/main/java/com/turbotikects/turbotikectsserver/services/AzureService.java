@@ -347,7 +347,18 @@ public class AzureService {
         dto.setGroupFilter(entity.getGroupFilter());
         dto.setLastSyncedAt(entity.getLastSyncedAt());
         dto.setActive(entity.isActive());
+        dto.setSsoEnabled(entity.isSsoEnabled());
+        dto.setSsoDisplayName(entity.getSsoDisplayName());
+        dto.setSamlSpEntityId(entity.getSamlSpEntityId());
         return dto;
+    }
+
+    public void setSso(Long id, boolean enabled, String displayName, String samlSpEntityId) {
+        AzureConfigEntity entity = findOrThrow(id);
+        entity.setSsoEnabled(enabled);
+        entity.setSsoDisplayName(displayName != null && !displayName.isBlank() ? displayName.trim() : null);
+        entity.setSamlSpEntityId(samlSpEntityId != null && !samlSpEntityId.isBlank() ? samlSpEntityId.trim() : null);
+        configRepository.save(entity);
     }
 
     private AzureFieldMappingDto toMappingDto(AzureFieldMappingEntity entity) {
