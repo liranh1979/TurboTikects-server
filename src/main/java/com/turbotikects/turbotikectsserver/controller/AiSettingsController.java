@@ -59,7 +59,7 @@ public class AiSettingsController {
 
     @PostMapping("/translate-bulk")
     public BulkTranslateResponseDto translateBulk(@RequestBody BulkTranslateRequestDto dto) throws URISyntaxException, IOException, InterruptedException {
-        return aiTranslationService.bulkTranslate(dto.getTargetLanguage());
+        return aiTranslationService.bulkTranslate(dto.getTranslations(), dto.getTargetLanguage());
     }
 
 }
