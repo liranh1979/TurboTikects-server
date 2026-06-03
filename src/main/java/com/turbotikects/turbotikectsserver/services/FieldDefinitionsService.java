@@ -30,7 +30,7 @@ public class FieldDefinitionsService {
     }
 
     public List<FieldDefinitionsEntity> getCustomFields(String entityType) {
-        return fieldDefinitionsRepository.findByEntityTypeAndIsSystemFalseOrderByDisplayOrder(entityType);
+        return fieldDefinitionsRepository.findByEntityTypeOrderByDisplayOrder(entityType);
     }
 
     public void setListVisibility(Long id, boolean visible) {

@@ -13,7 +13,6 @@ import java.net.URISyntaxException;
 import java.util.List;
 import java.util.Map;
 
-@CrossOrigin(origins = "${app.cors.origins}")
 @RestController
 public class DynamicTranslationsController {
 

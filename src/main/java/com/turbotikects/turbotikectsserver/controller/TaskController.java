@@ -8,7 +8,6 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.util.List;
 
-@CrossOrigin(origins = "${app.cors.origins}", allowCredentials = "true")
 @RestController
 @RequestMapping("/api/v1/tasks")
 public class TaskController {

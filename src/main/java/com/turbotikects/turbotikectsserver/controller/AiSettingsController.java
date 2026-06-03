@@ -15,7 +15,6 @@ import java.net.URISyntaxException;
 import java.util.List;
 import java.util.Map;
 
-@CrossOrigin(origins = "${app.cors.origins}")
 @RestController
 @RequestMapping("/api/v1/ai")
 @RequirePermission("MANAGE_AI")

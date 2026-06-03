@@ -13,7 +13,6 @@ import org.springframework.web.bind.annotation.*;
 import java.util.List;
 import java.util.Map;
 
-@CrossOrigin(origins = "${app.cors.origins}")
 @RestController
 @RequestMapping("/api/v1/groups")
 @RequirePermission("MANAGE_GROUPS")

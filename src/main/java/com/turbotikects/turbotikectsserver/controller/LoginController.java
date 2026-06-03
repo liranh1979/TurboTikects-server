@@ -12,7 +12,6 @@ import org.springframework.web.bind.annotation.*;
 
 import java.util.UUID;
 
-@CrossOrigin(origins = "${app.cors.origins}")
 @RestController
 public class LoginController {
 

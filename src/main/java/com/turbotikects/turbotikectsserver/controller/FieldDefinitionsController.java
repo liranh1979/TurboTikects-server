@@ -11,7 +11,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.ArrayList;
 
-@CrossOrigin(origins = "${app.cors.origins}")
 @RestController
 @RequestMapping("/api/v1/field-definitions")
 @RequirePermission("MANAGE_FIELDS")
