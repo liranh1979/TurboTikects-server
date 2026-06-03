@@ -128,6 +128,7 @@ public class UserService {
 
     private UserDto buildUserDto(UserEntity user) {
         UserDto dto = new UserDto();
+        dto.setUserId(user.getRed_id());
         dto.setUsername(user.getUsername());
         dto.setDisplayName(user.getDisplayName());
         dto.setSuperAdmin(user.isSuperAdmin());

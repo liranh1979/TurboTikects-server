@@ -46,7 +46,10 @@ public class WebConfig implements WebMvcConfigurer {
             "/api/v1/locales/**",
             "/api/v1/languages",
             "/api/v1/sso/**",
-            "/api/v1/saml2/**"
+            "/api/v1/saml2/**",
+            "/api/v1/attachments/download",
+            "/api/v1/attachments/preview",
+            "/api/v1/attachments/stream"
         };
 
         registry.addInterceptor(authInterceptor)

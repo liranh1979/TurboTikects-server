@@ -10,6 +10,9 @@ import java.util.Map;
 @Setter
 public class UserDto {
 
+    @JsonProperty("red_id")
+    private Long userId;
+
     @JsonProperty("user_name")
     private String username;
 
