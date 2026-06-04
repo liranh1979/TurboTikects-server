@@ -15,6 +15,8 @@ public interface UserPermissionRepository extends JpaRepository<UserPermissionEn
 
     List<UserPermissionEntity> findByUserIdIn(List<Long> userIds);
 
+    List<UserPermissionEntity> findByPermissionId(Long permissionId);
+
     @Modifying
     @Transactional
     @Query("DELETE FROM UserPermissionEntity up WHERE up.userId = :userId")

@@ -42,7 +42,7 @@ public class AttachmentController {
                                       @RequestParam Long entityId,
                                       @RequestParam("files") MultipartFile[] files,
                                       HttpServletRequest request) throws IOException {
-        Long uploadedBy = currentUserId(request);
+        Integer uploadedBy = currentUserId(request);
         return attachmentService.upload(entityType, entityId, files, uploadedBy);
     }
 
@@ -125,9 +125,9 @@ public class AttachmentController {
                 .body(new ByteArrayResource(chunk));
     }
 
-    private Long currentUserId(HttpServletRequest request) {
+    private Integer currentUserId(HttpServletRequest request) {
         Object user = request.getAttribute("currentUser");
-        if (user instanceof UserDto dto) return dto.getUserId();
+        if (user instanceof UserDto dto && dto.getUserId() != null) return dto.getUserId().intValue();
         return null;
     }
 

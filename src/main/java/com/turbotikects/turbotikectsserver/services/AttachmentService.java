@@ -42,7 +42,7 @@ public class AttachmentService {
     }
 
     public List<AttachmentDto> upload(String entityType, Long entityId,
-                                      MultipartFile[] files, Long uploadedBy) throws IOException {
+                                      MultipartFile[] files, Integer uploadedBy) throws IOException {
         List<AttachmentDto> results = new ArrayList<>();
         for (MultipartFile file : files) {
             if (file.getSize() > MAX_FILE_SIZE) {

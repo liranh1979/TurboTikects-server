@@ -15,6 +15,8 @@ public interface GroupPermissionRepository extends JpaRepository<GroupPermission
 
     List<GroupPermissionEntity> findByGroupIdIn(List<Long> groupIds);
 
+    List<GroupPermissionEntity> findByPermissionId(Long permissionId);
+
     @Modifying
     @Transactional
     @Query("DELETE FROM GroupPermissionEntity gp WHERE gp.groupId = :groupId")

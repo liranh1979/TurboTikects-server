@@ -12,6 +12,6 @@ public class AttachmentDto {
     private String originalFilename;
     private String mimeType;
     private Long fileSize;
-    private Long uploadedBy;
+    private Integer uploadedBy;
     private LocalDateTime createdAt;
 }

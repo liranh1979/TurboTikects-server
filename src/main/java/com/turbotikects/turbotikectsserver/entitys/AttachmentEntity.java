@@ -27,7 +27,7 @@ public class AttachmentEntity {
     private Long fileId;
 
     @Column(name = "uploaded_by")
-    private Long uploadedBy;
+    private Integer uploadedBy;
 
     @Column(name = "created_at")
     private LocalDateTime createdAt;

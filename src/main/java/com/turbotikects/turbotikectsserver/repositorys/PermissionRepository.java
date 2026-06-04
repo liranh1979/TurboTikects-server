@@ -6,10 +6,13 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
 import java.util.List;
+import java.util.Optional;
 
 public interface PermissionRepository extends JpaRepository<PermissionEntity, Long> {
 
     List<PermissionEntity> findAllByOrderByDisplayOrder();
+
+    Optional<PermissionEntity> findByPermissionKey(String permissionKey);
 
     @Query("SELECT DISTINCT p.permissionKey FROM PermissionEntity p WHERE " +
            "p.id IN (SELECT up.permissionId FROM UserPermissionEntity up WHERE up.userId = :userId) " +

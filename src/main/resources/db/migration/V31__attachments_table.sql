@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS attachments (
     entity_id         BIGINT       NOT NULL,
     original_filename VARCHAR(255) NOT NULL,
     file_id           BIGINT       NOT NULL,
-    uploaded_by       BIGINT       NULL,
+    uploaded_by       INT          NULL,
     created_at        TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_entity (entity_type, entity_id),
     CONSTRAINT fk_attachment_file
