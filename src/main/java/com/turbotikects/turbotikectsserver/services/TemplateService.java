@@ -191,13 +191,14 @@ public class TemplateService {
 
     private Map<String, Object> buildDefaultLayout() {
         List<Map<String, Object>> fields = new ArrayList<>();
-        addField(fields, "title",        "text",      true, 1, "",    "full");
-        addField(fields, "description",  "rich-text", true, 2, "",    "full");
-        addField(fields, "status",       "combobox",  true, 3, "new", "half");
-        addField(fields, "request_user", "text",      true, 4, "",    "half");
-        addField(fields, "responsible",  "text",      true, 5, "",    "half");
-        addField(fields, "attachments",  "attachments", true, 6, "",  "full");
-        addField(fields, "labels",       "labels",      true, 7, "",  "full");
+        addField(fields, "title",        "text",      true, 1, "",    "full",  null);
+        addField(fields, "description",  "rich-text", true, 2, "",    "full",  null);
+        addField(fields, "status",       "combobox",  true, 3, "new", "half",
+                List.of("new", "open", "in_progress", "waiting", "resolved", "closed"));
+        addField(fields, "request_user", "text",      true, 4, "",    "half",  null);
+        addField(fields, "responsible",  "text",      true, 5, "",    "half",  null);
+        addField(fields, "attachments",  "attachments", true, 6, "",  "full",  null);
+        addField(fields, "labels",       "labels",      true, 7, "",  "full",  null);
 
         Map<String, Object> tab = new LinkedHashMap<>();
         tab.put("tabKey", "main");
@@ -210,7 +211,8 @@ public class TemplateService {
     }
 
     private void addField(List<Map<String, Object>> fields, String key, String type,
-                          boolean system, int order, String defaultValue, String width) {
+                          boolean system, int order, String defaultValue, String width,
+                          List<String> fieldOptions) {
         Map<String, Object> field = new LinkedHashMap<>();
         field.put("fieldKey", key);
         field.put("fieldType", type);
@@ -218,6 +220,9 @@ public class TemplateService {
         field.put("displayOrder", order);
         field.put("defaultValue", defaultValue);
         field.put("width", width);
+        if (fieldOptions != null && !fieldOptions.isEmpty()) {
+            field.put("fieldOptions", fieldOptions);
+        }
         fields.add(field);
     }
 
