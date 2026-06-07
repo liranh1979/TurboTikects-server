@@ -10,6 +10,7 @@ public class TemplateSummaryDto {
     private String name;
     private String description;
     private int currentVersionNumber;
+    private boolean isDefault;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 }

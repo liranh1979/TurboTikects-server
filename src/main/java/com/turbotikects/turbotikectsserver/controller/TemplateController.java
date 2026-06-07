@@ -42,6 +42,11 @@ public class TemplateController {
         return templateService.saveLayout(id, dto);
     }
 
+    @PatchMapping("/{id}/set-default")
+    public TemplateSummaryDto setDefault(@PathVariable Long id) {
+        return templateService.setDefault(id);
+    }
+
     @DeleteMapping("/{id}")
     public void delete(@PathVariable Long id) {
         templateService.delete(id);

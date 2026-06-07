@@ -49,6 +49,7 @@ public class TemplateService {
             dto.setUpdatedAt(t.getUpdatedAt());
             versionRepo.findByTemplateIdAndIsCurrentTrue(t.getId())
                     .ifPresent(v -> dto.setCurrentVersionNumber(v.getVersionNumber()));
+            dto.setDefault(t.isDefault());
             result.add(dto);
         }
         return result;
@@ -102,6 +103,25 @@ public class TemplateService {
         newVersion = versionRepo.save(newVersion);
 
         return toWithLayoutDto(template, newVersion);
+    }
+
+    @Transactional
+    public TemplateSummaryDto setDefault(Long id) {
+        TemplateEntity template = templateRepo.findById(id)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+        templateRepo.clearAllDefaults();
+        template.setDefault(true);
+        template = templateRepo.save(template);
+        TemplateSummaryDto dto = new TemplateSummaryDto();
+        dto.setId(template.getId());
+        dto.setName(template.getName());
+        dto.setDescription(template.getDescription());
+        dto.setDefault(true);
+        dto.setCreatedAt(template.getCreatedAt());
+        dto.setUpdatedAt(template.getUpdatedAt());
+        versionRepo.findByTemplateIdAndIsCurrentTrue(id)
+                .ifPresent(v -> dto.setCurrentVersionNumber(v.getVersionNumber()));
+        return dto;
     }
 
     public void delete(Long id) {
@@ -177,6 +197,7 @@ public class TemplateService {
         addField(fields, "request_user", "text",      true, 4, "",    "half");
         addField(fields, "responsible",  "text",      true, 5, "",    "half");
         addField(fields, "attachments",  "attachments", true, 6, "",  "full");
+        addField(fields, "labels",       "labels",      true, 7, "",  "full");
 
         Map<String, Object> tab = new LinkedHashMap<>();
         tab.put("tabKey", "main");
@@ -208,6 +229,7 @@ public class TemplateService {
         dto.setCurrentVersionNumber(v.getVersionNumber());
         dto.setCurrentVersionId(v.getId());
         dto.setLayout(v.getLayout());
+        dto.setDefault(t.isDefault());
         dto.setCreatedAt(t.getCreatedAt());
         dto.setUpdatedAt(t.getUpdatedAt());
         return dto;

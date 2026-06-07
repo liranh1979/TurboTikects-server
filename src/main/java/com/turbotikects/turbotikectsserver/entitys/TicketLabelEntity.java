@@ -6,22 +6,19 @@ import lombok.Data;
 import java.time.LocalDateTime;
 
 @Entity
-@Table(name = "ticket_templates")
+@Table(name = "ticket_labels")
 @Data
-public class TemplateEntity {
+public class TicketLabelEntity {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column
-    private String name;
+    @Column(name = "label_key", unique = true)
+    private String labelKey;
 
     @Column
-    private String description;
-
-    @Column(name = "is_default")
-    private boolean isDefault;
+    private String color;
 
     @Column(name = "created_at")
     private LocalDateTime createdAt;
@@ -30,12 +27,8 @@ public class TemplateEntity {
     private LocalDateTime updatedAt;
 
     @PrePersist
-    void onCreate() {
-        createdAt = updatedAt = LocalDateTime.now();
-    }
+    void onCreate() { createdAt = updatedAt = LocalDateTime.now(); }
 
     @PreUpdate
-    void onUpdate() {
-        updatedAt = LocalDateTime.now();
-    }
+    void onUpdate() { updatedAt = LocalDateTime.now(); }
 }

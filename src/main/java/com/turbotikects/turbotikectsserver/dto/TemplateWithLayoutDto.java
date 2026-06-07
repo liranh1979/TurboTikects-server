@@ -13,6 +13,7 @@ public class TemplateWithLayoutDto {
     private int currentVersionNumber;
     private Long currentVersionId;
     private Map<String, Object> layout;
+    private boolean isDefault;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 }

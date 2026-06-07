@@ -15,4 +15,11 @@ public interface DynamicTranslationsRepository  extends JpaRepository<DynamicTra
    List<DynamicTranslationsEntity> findByLangCode(String langCode);
 
    void deleteByLangCode(String langCode);
+
+   Optional<DynamicTranslationsEntity> findByLangCodeAndTypeAndTranslationKey(String langCode, String type, String translationKey);
+
+   @org.springframework.transaction.annotation.Transactional
+   @org.springframework.data.jpa.repository.Modifying
+   @org.springframework.data.jpa.repository.Query("DELETE FROM DynamicTranslationsEntity d WHERE d.type = :type AND d.translationKey = :translationKey")
+   void deleteByTypeAndTranslationKey(String type, String translationKey);
 }

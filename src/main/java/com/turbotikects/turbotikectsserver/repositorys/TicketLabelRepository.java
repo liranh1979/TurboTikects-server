@@ -1,19 +1,19 @@
 package com.turbotikects.turbotikectsserver.repositorys;
 
-import com.turbotikects.turbotikectsserver.entitys.TemplateEntity;
+import com.turbotikects.turbotikectsserver.entitys.TicketLabelEntity;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.util.Optional;
+import java.util.List;
 
-public interface TemplateRepository extends JpaRepository<TemplateEntity, Long> {
+public interface TicketLabelRepository extends JpaRepository<TicketLabelEntity, Long> {
 
-    Optional<TemplateEntity> findByIsDefaultTrue();
+    boolean existsByLabelKey(String labelKey);
 
     @Modifying
     @Transactional
-    @Query("UPDATE TemplateEntity t SET t.isDefault = false")
-    void clearAllDefaults();
+    @Query("DELETE FROM TicketLabelEntity t WHERE t.id IN :ids")
+    void deleteAllByIdIn(List<Long> ids);
 }
