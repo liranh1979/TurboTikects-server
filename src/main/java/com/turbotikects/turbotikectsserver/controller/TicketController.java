@@ -21,7 +21,6 @@ import java.util.Map;
 
 @RestController
 @RequestMapping("/api/v1/tickets")
-@RequirePermission("TICKET_MANAGER")
 public class TicketController {
 
     private final TicketService ticketService;
@@ -46,15 +45,26 @@ public class TicketController {
             @RequestParam(required = false) String status,
             @RequestParam(required = false) Long templateId,
             @RequestParam(name = "labels", required = false) List<Long> labelIds,
-            @RequestParam(required = false) Integer responsibleUserId) {
-        return ticketService.getPage(cursor, size, search, status, templateId, labelIds, responsibleUserId);
+            @RequestParam(required = false) Integer responsibleUserId,
+            HttpServletRequest request) {
+        UserDto caller = currentUser(request);
+        boolean isManager = caller != null
+                && (caller.isSuperAdmin()
+                    || (caller.getEffectivePermissions() != null
+                        && caller.getEffectivePermissions().contains("TICKET_MANAGER")));
+        Integer filterUserId = isManager ? null : (caller != null ? caller.getUserId().intValue() : null);
+        return ticketService.getPage(cursor, size, search, status, templateId, labelIds, responsibleUserId, filterUserId);
     }
 
     // ── GET BY ID ─────────────────────────────────────────────────────────────
 
     @GetMapping("/{id}")
-    public TicketDetailDto getById(@PathVariable Long id) {
-        return ticketService.getById(id);
+    public TicketDetailDto getById(@PathVariable Long id, HttpServletRequest request) {
+        UserDto caller = currentUser(request);
+        boolean isManager = caller != null && (caller.isSuperAdmin()
+                || (caller.getEffectivePermissions() != null
+                    && caller.getEffectivePermissions().contains("TICKET_MANAGER")));
+        return ticketService.getById(id, caller != null ? caller.getUserId().intValue() : null, isManager);
     }
 
     // ── CREATE ────────────────────────────────────────────────────────────────
@@ -88,6 +98,7 @@ public class TicketController {
     // ── DELETE SINGLE ─────────────────────────────────────────────────────────
 
     @DeleteMapping("/{id}")
+    @RequirePermission("TICKET_MANAGER")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void delete(@PathVariable Long id) {
         ticketService.bulkDelete(List.of(id));
@@ -96,12 +107,14 @@ public class TicketController {
     // ── BULK OPERATIONS ───────────────────────────────────────────────────────
 
     @PostMapping("/bulk-delete")
+    @RequirePermission("TICKET_MANAGER")
     @ResponseStatus(HttpStatus.NO_CONTENT)
     public void bulkDelete(@RequestBody BulkTicketIdsDto dto) {
         ticketService.bulkDelete(dto.getIds());
     }
 
     @PostMapping("/bulk-update-status")
+    @RequirePermission("TICKET_MANAGER")
     public Map<String, Integer> bulkUpdateStatus(@RequestBody BulkUpdateStatusDto dto,
                                                   HttpServletRequest request) {
         Integer userId = currentUserId(request);
@@ -109,6 +122,7 @@ public class TicketController {
     }
 
     @PostMapping("/bulk-update-responsible")
+    @RequirePermission("TICKET_MANAGER")
     public Map<String, Integer> bulkUpdateResponsible(@RequestBody BulkUpdateResponsibleDto dto,
                                                        HttpServletRequest request) {
         Integer userId = currentUserId(request);
@@ -117,6 +131,7 @@ public class TicketController {
     }
 
     @PostMapping("/bulk-add-label")
+    @RequirePermission("TICKET_MANAGER")
     public Map<String, Integer> bulkAddLabel(@RequestBody BulkLabelDto dto,
                                               HttpServletRequest request) {
         Integer userId = currentUserId(request);
@@ -124,6 +139,7 @@ public class TicketController {
     }
 
     @PostMapping("/bulk-remove-label")
+    @RequirePermission("TICKET_MANAGER")
     public Map<String, Integer> bulkRemoveLabel(@RequestBody BulkLabelDto dto,
                                                  HttpServletRequest request) {
         Integer userId = currentUserId(request);

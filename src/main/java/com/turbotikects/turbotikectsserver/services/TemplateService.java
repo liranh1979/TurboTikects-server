@@ -245,8 +245,12 @@ public class TemplateService {
         if (layout == null) return null;
 
         Map<String, Boolean> adminOnlyMap = new HashMap<>();
+        Map<String, List<String>> fieldOptionsMap = new HashMap<>();
         for (FieldDefinitionsEntity f : fieldDefinitionsService.getCustomFields("ticket")) {
             adminOnlyMap.put(f.getFieldKey(), f.isAdminOnly());
+            if (f.getFieldOptions() != null && !f.getFieldOptions().isEmpty()) {
+                fieldOptionsMap.put(f.getFieldKey(), f.getFieldOptions());
+            }
         }
 
         Object tabs = layout.get("tabs");
@@ -263,7 +267,12 @@ public class TemplateService {
                     if (!(fObj instanceof Map)) { newFields.add(fObj); continue; }
                     Map<String, Object> field = new LinkedHashMap<>((Map<String, Object>) fObj);
                     String fKey = (String) field.get("fieldKey");
-                    if (fKey != null) field.put("isAdminOnly", adminOnlyMap.getOrDefault(fKey, false));
+                    if (fKey != null) {
+                        field.put("isAdminOnly", adminOnlyMap.getOrDefault(fKey, false));
+                        if (fieldOptionsMap.containsKey(fKey)) {
+                            field.put("fieldOptions", fieldOptionsMap.get(fKey));
+                        }
+                    }
                     newFields.add(field);
                 }
                 tab.put("fields", newFields);

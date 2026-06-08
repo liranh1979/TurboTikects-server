@@ -48,12 +48,15 @@ public class TicketService {
 
     public List<TicketListItemDto> getPage(Long cursor, int size, String search,
                                            String status, Long templateId,
-                                           List<Long> labelIds, Integer responsibleUserId) {
+                                           List<Long> labelIds, Integer responsibleUserId,
+                                           Integer filterUserId) {
         List<TicketEntity> tickets;
         if (search != null && !search.isBlank()) {
-            tickets = ticketRepo.searchPage(search + "*", cursor, size);
+            tickets = filterUserId != null
+                    ? ticketRepo.searchPageByUser(search + "*", cursor, size, filterUserId)
+                    : ticketRepo.searchPage(search + "*", cursor, size);
         } else {
-            tickets = ticketRepo.findPage(cursor, size, status, templateId, responsibleUserId);
+            tickets = ticketRepo.findPage(cursor, size, status, templateId, responsibleUserId, filterUserId);
         }
 
         if (tickets.isEmpty()) return Collections.emptyList();
@@ -131,6 +134,15 @@ public class TicketService {
     public TicketDetailDto getById(Long id) {
         TicketEntity ticket = ticketRepo.findById(id)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+        return toDetailDto(ticket);
+    }
+
+    public TicketDetailDto getById(Long id, Integer callerId, boolean isManager) {
+        TicketEntity ticket = ticketRepo.findById(id)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+        if (!isManager && (callerId == null || !callerId.equals(ticket.getRequestUserId()))) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN);
+        }
         return toDetailDto(ticket);
     }
 

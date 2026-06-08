@@ -142,4 +142,20 @@ public class TicketAiService {
 
         return response;
     }
+
+    public Long getDefaultTemplateId() {
+        return templateRepo.findByIsDefaultTrue()
+                .map(TemplateEntity::getId)
+                .orElseGet(() -> {
+                    List<TemplateEntity> all = templateRepo.findAll();
+                    return all.isEmpty() ? null : all.get(0).getId();
+                });
+    }
+
+    public Long getCurrentVersionId(Long templateId) {
+        if (templateId == null) return null;
+        return versionRepo.findByTemplateIdAndIsCurrentTrue(templateId)
+                .map(v -> v.getId())
+                .orElse(null);
+    }
 }

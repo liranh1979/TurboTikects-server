@@ -11,11 +11,14 @@ import java.util.List;
 
 public interface TicketRepository extends JpaRepository<TicketEntity, Long> {
 
-    @Query("SELECT t FROM TicketEntity t WHERE (:cursor IS NULL OR t.id < :cursor) AND (:status IS NULL OR t.status = :status) AND (:templateId IS NULL OR t.templateId = :templateId) AND (:responsibleUserId IS NULL OR t.responsibleUserId = :responsibleUserId) ORDER BY t.id DESC LIMIT :size")
-    List<TicketEntity> findPage(@Param("cursor") Long cursor, @Param("size") int size, @Param("status") String status, @Param("templateId") Long templateId, @Param("responsibleUserId") Integer responsibleUserId);
+    @Query("SELECT t FROM TicketEntity t WHERE (:cursor IS NULL OR t.id < :cursor) AND (:status IS NULL OR t.status = :status) AND (:templateId IS NULL OR t.templateId = :templateId) AND (:responsibleUserId IS NULL OR t.responsibleUserId = :responsibleUserId) AND (:filterUserId IS NULL OR t.requestUserId = :filterUserId) ORDER BY t.id DESC LIMIT :size")
+    List<TicketEntity> findPage(@Param("cursor") Long cursor, @Param("size") int size, @Param("status") String status, @Param("templateId") Long templateId, @Param("responsibleUserId") Integer responsibleUserId, @Param("filterUserId") Integer filterUserId);
 
     @Query(value = "SELECT * FROM tickets WHERE MATCH(title, description) AGAINST (:q IN BOOLEAN MODE) AND (:cursor IS NULL OR id < :cursor) ORDER BY id DESC LIMIT :size", nativeQuery = true)
     List<TicketEntity> searchPage(@Param("q") String q, @Param("cursor") Long cursor, @Param("size") int size);
+
+    @Query(value = "SELECT * FROM tickets WHERE MATCH(title, description) AGAINST (:q IN BOOLEAN MODE) AND (:cursor IS NULL OR id < :cursor) AND request_user_id = :filterUserId ORDER BY id DESC LIMIT :size", nativeQuery = true)
+    List<TicketEntity> searchPageByUser(@Param("q") String q, @Param("cursor") Long cursor, @Param("size") int size, @Param("filterUserId") Integer filterUserId);
 
     @Modifying
     @Transactional
