@@ -42,6 +42,10 @@ public class FieldDefinitionsEntity {
     @Column(name = "is_system")
     private boolean isSystem;
 
+    @JsonProperty("isAdminOnly")
+    @Column(name = "is_admin_only")
+    private boolean isAdminOnly;
+
     @JdbcTypeCode(SqlTypes.JSON)
     @Column(name = "field_options", columnDefinition = "json")
     private List<String> fieldOptions;

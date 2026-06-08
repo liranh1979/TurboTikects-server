@@ -54,4 +54,9 @@ public class FieldDefinitionsController {
     public void updateFieldOptions(@PathVariable Long id, @RequestBody List<String> options) {
         fieldDefinitionsService.updateFieldOptions(id, options);
     }
+
+    @PatchMapping("/{id}/admin-only")
+    public void setAdminOnly(@PathVariable Long id, @RequestParam boolean adminOnly) {
+        fieldDefinitionsService.setAdminOnly(id, adminOnly);
+    }
 }

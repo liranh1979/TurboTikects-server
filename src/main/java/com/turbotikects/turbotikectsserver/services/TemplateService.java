@@ -233,10 +233,45 @@ public class TemplateService {
         dto.setDescription(t.getDescription());
         dto.setCurrentVersionNumber(v.getVersionNumber());
         dto.setCurrentVersionId(v.getId());
-        dto.setLayout(v.getLayout());
+        dto.setLayout(enrichLayoutWithAdminOnly(v.getLayout()));
         dto.setDefault(t.isDefault());
         dto.setCreatedAt(t.getCreatedAt());
         dto.setUpdatedAt(t.getUpdatedAt());
         return dto;
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> enrichLayoutWithAdminOnly(Map<String, Object> layout) {
+        if (layout == null) return null;
+
+        Map<String, Boolean> adminOnlyMap = new HashMap<>();
+        for (FieldDefinitionsEntity f : fieldDefinitionsService.getCustomFields("ticket")) {
+            adminOnlyMap.put(f.getFieldKey(), f.isAdminOnly());
+        }
+
+        Object tabs = layout.get("tabs");
+        if (!(tabs instanceof List<?>)) return layout;
+
+        List<Object> newTabs = new ArrayList<>();
+        for (Object tabObj : (List<?>) tabs) {
+            if (!(tabObj instanceof Map)) { newTabs.add(tabObj); continue; }
+            Map<String, Object> tab = new LinkedHashMap<>((Map<String, Object>) tabObj);
+            Object fields = tab.get("fields");
+            if (fields instanceof List<?>) {
+                List<Object> newFields = new ArrayList<>();
+                for (Object fObj : (List<?>) fields) {
+                    if (!(fObj instanceof Map)) { newFields.add(fObj); continue; }
+                    Map<String, Object> field = new LinkedHashMap<>((Map<String, Object>) fObj);
+                    String fKey = (String) field.get("fieldKey");
+                    if (fKey != null) field.put("isAdminOnly", adminOnlyMap.getOrDefault(fKey, false));
+                    newFields.add(field);
+                }
+                tab.put("fields", newFields);
+            }
+            newTabs.add(tab);
+        }
+        Map<String, Object> result = new LinkedHashMap<>(layout);
+        result.put("tabs", newTabs);
+        return result;
     }
 }

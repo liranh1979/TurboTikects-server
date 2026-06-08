@@ -40,6 +40,13 @@ public class FieldDefinitionsService {
         });
     }
 
+    public void setAdminOnly(Long id, boolean adminOnly) {
+        fieldDefinitionsRepository.findById(id).ifPresent(f -> {
+            f.setAdminOnly(adminOnly);
+            fieldDefinitionsRepository.save(f);
+        });
+    }
+
     public Map<String, String> getFieldTranslations(String langCode, String translationType) {
         Map<String, String> result = new HashMap<>();
         Optional<List<DynamicTranslationsEntity>> entries =
