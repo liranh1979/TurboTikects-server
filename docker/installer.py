@@ -26,7 +26,7 @@ COMPOSE_TPL = SCRIPT_DIR / "docker-compose.yml"
 LAST_IMAGE  = SCRIPT_DIR / ".last_image"
 COMPOSE_OUT = Path.cwd() / "docker-compose.yml"
 
-DEFAULT_IMAGE = "your-org/turbotikects:latest"
+DEFAULT_IMAGE = "liran1979/turbotikects:latest"
 
 # ── Colour palette ─────────────────────────────────────────────────────────
 BG       = "#0f172a"
@@ -94,6 +94,7 @@ def parse_existing_compose():
     for key, pattern in [
         ("docker_image", r'image:\s*["\']?([^\s"\']+)["\']?'),
         ("db_name",      r'MYSQL_DATABASE:\s*["\']?([^\s"\']+)["\']?'),
+        ("db_pass",      r'MYSQL_ROOT_PASSWORD:\s*["\']?([^\s"\']+)["\']?'),
         ("app_port",     r'"(\d+):3000"'),
     ]:
         m = re.search(pattern, txt)
@@ -112,7 +113,9 @@ def generate_compose(cfg):
         tpl = EMBEDDED_TEMPLATE
     result = tpl
     for k, v in cfg.items():
-        result = result.replace(f"${{{k.upper()}}}", str(v))
+        # Escape $ in values so Docker Compose doesn't treat them as variables
+        safe_v = str(v).replace("$", "$$")
+        result = result.replace(f"${{{k.upper()}}}", safe_v)
     COMPOSE_OUT.write_text(result)
 
 def poll_ready(port, timeout=120):

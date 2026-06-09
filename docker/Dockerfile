@@ -27,8 +27,19 @@ COPY ticketmaster-client/              ticketmaster-client/
 COPY TurboTikects-server/src           TurboTikects-server/src
 COPY TurboTikects-server/docker        TurboTikects-server/docker
 
-# ── Build: npm (via Gradle npmBuild task) + ProGuard + bootJar ────────────
-RUN cd TurboTikects-server && ./gradlew bootJar -x test --no-daemon -Pobfuscate
+# ── Step 1: Compile sources + npm build + ProGuard obfuscation ────────────
+RUN cd TurboTikects-server && ./gradlew obfuscate -x test --no-daemon -Pobfuscate
+
+# ── Step 2: Replace compiled classes with obfuscated ones ─────────────────
+RUN rm -rf /workspace/TurboTikects-server/build/classes/java/main \
+ && mkdir -p /workspace/TurboTikects-server/build/classes/java/main \
+ && cd /workspace/TurboTikects-server/build/classes/java/main \
+ && jar xf /workspace/TurboTikects-server/build/libs-obfuscation/app-obfuscated.jar \
+ && find . -not -name "*.class" -not -type d -delete \
+ && find . -empty -type d -delete
+
+# ── Step 3: Package fat bootJar with obfuscated classes ───────────────────
+RUN cd TurboTikects-server && ./gradlew bootJar -x test -x compileJava -x processResources --no-daemon
 
 # ── Stage 2: Runtime (JRE 17 slim) ────────────────────────────────────────
 FROM eclipse-temurin:17-jre-alpine

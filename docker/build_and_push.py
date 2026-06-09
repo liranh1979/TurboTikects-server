@@ -94,13 +94,14 @@ def main():
         print("ERROR: docker login failed.")
         sys.exit(1)
 
+    no_cache = prompt("Force --no-cache build? (y/N)", "N").lower() == "y"
+
     # Build
-    run([
-        "docker", "build",
-        "-f", str(DOCKERFILE),
-        "-t", full_image,
-        "."
-    ])
+    build_cmd = ["docker", "build", "-f", str(DOCKERFILE), "-t", full_image]
+    if no_cache:
+        build_cmd.append("--no-cache")
+    build_cmd.append(".")
+    run(build_cmd)
 
     # Push versioned tag
     run(["docker", "push", full_image])

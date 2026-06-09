@@ -87,21 +87,23 @@ task npmBuild(type: Exec, dependsOn: npmInstall) {
 processResources.dependsOn(npmBuild)
 
 // ── ProGuard obfuscation (activated only with -Pobfuscate) ──────────────────
+// Unpack + repack is handled by the Dockerfile; Gradle only compiles + obfuscates.
 if (project.hasProperty('obfuscate')) {
 
-    // Step 1: Create a plain (non-fat) JAR of the application classes
+    def obfuscationDir = layout.buildDirectory.dir("libs-obfuscation")
+    def obfuscatedJar  = layout.buildDirectory.file("libs-obfuscation/app-obfuscated.jar")
+
     task plainJar(type: Jar, dependsOn: [compileJava, processResources]) {
         archiveFileName = 'app-plain.jar'
-        destinationDirectory = file("${buildDir}/libs-obfuscation")
+        destinationDirectory.set(obfuscationDir)
         from(sourceSets.main.output)
     }
 
-    // Step 2: Run ProGuard on the plain JAR
     task obfuscate(type: ProGuardTask, dependsOn: plainJar) {
         configuration("${projectDir}/docker/proguard-rules.pro")
 
-        injars(plainJar.archiveFile)
-        outjars(file("${buildDir}/libs-obfuscation/app-obfuscated.jar"))
+        injars(plainJar.archiveFile.get().asFile)
+        outjars(obfuscatedJar.get().asFile)
 
         libraryjars(configurations.runtimeClasspath.filter { it.exists() })
 
@@ -114,20 +116,6 @@ if (project.hasProperty('obfuscate')) {
             }
         }
 
-        printmapping("${buildDir}/proguard-mapping.txt")
+        printmapping(layout.buildDirectory.file("proguard-mapping.txt").get().asFile)
     }
-
-    // Step 3: Unpack obfuscated JAR back into the classes directory
-    task unpackObfuscated(type: Copy, dependsOn: obfuscate) {
-        def targetDir = sourceSets.main.output.classesDirs.singleFile
-        doFirst {
-            targetDir.deleteDir()
-            targetDir.mkdirs()
-        }
-        from(zipTree(file("${buildDir}/libs-obfuscation/app-obfuscated.jar")))
-        into(targetDir)
-    }
-
-    // Step 4: bootJar uses the obfuscated classes
-    bootJar.dependsOn(unpackObfuscated)
 }

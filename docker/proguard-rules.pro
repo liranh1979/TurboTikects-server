@@ -1,5 +1,5 @@
 # ── Preserve annotations (Spring, JPA, Jackson all need them) ──────────
--keepattributes *Annotation*, Signature, EnclosingMethod, InnerClasses
+-keepattributes *Annotation*, Signature, EnclosingMethod, InnerClasses, MethodParameters
 
 # ── Spring component scanning needs exact class names ──────────────────
 -keep @org.springframework.stereotype.Component class * { *; }
@@ -24,6 +24,10 @@
 -keep @jakarta.persistence.Entity class * { *; }
 -keep @jakarta.persistence.MappedSuperclass class * { *; }
 -keep @jakarta.persistence.Table class * { *; }
+-keep @jakarta.persistence.Embeddable class * { *; }
+
+# ── @IdClass POJOs: not annotated with @Entity but must match entity field names
+-keep class com.turbotikects.turbotikectsserver.entitys.** { *; }
 
 # ── Spring Data repositories ────────────────────────────────────────────
 -keep interface com.turbotikects.turbotikectsserver.repositorys.** { *; }
