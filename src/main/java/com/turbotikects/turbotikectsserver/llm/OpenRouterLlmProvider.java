@@ -21,18 +21,17 @@ import java.util.Map;
 
 @Slf4j
 @Component
-public class OpenAiLlmProvider implements LlmProvider {
+public class OpenRouterLlmProvider implements LlmProvider {
 
-    private static final String COMPLETIONS_URL = "https://api.openai.com/v1/chat/completions";
-    private static final String MODELS_URL      = "https://api.openai.com/v1/models";
+    private static final String COMPLETIONS_URL = "https://openrouter.ai/api/v1/chat/completions";
+    private static final String MODELS_URL      = "https://openrouter.ai/api/v1/models";
 
     public static final LlmProviderInfoDto INFO =
-            new LlmProviderInfoDto("openai", "OpenAI", "gpt-4o");
+            new LlmProviderInfoDto("openrouter", "OpenRouter", "openai/gpt-4o");
 
     @Override
     public boolean supports(String providerName) {
-        if (providerName == null) return true;
-        return "openai".equalsIgnoreCase(providerName);
+        return "openrouter".equalsIgnoreCase(providerName);
     }
 
     @Override
@@ -47,14 +46,16 @@ public class OpenAiLlmProvider implements LlmProvider {
         HttpRequest request = HttpRequest.newBuilder(new URI(COMPLETIONS_URL))
                 .header("Content-Type", "application/json")
                 .header("Authorization", "Bearer " + settings.getApiKey())
+                .header("HTTP-Referer", "https://turbotikects.app")
+                .header("X-Title", "TurboTikects")
                 .POST(HttpRequest.BodyPublishers.ofString(mapper.writeValueAsString(payload)))
                 .build();
 
         HttpResponse<String> response = HttpClient.newHttpClient().send(request, HttpResponse.BodyHandlers.ofString());
-        log.info("OpenAI send → {}", response.statusCode());
+        log.info("OpenRouter send → {}", response.statusCode());
 
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
-            throw new IOException("OpenAI API error " + response.statusCode() + ": " + response.body());
+            throw new IOException("OpenRouter API error " + response.statusCode() + ": " + response.body());
         }
 
         LlmResponse llmResponse = mapper.readValue(response.body(), LlmResponse.class);
@@ -68,10 +69,12 @@ public class OpenAiLlmProvider implements LlmProvider {
     public AiSettingTestResultDto validateKey(AiSettingsEntity settings) throws Exception {
         HttpRequest request = HttpRequest.newBuilder(new URI(MODELS_URL))
                 .header("Authorization", "Bearer " + settings.getApiKey())
+                .header("HTTP-Referer", "https://turbotikects.app")
+                .header("X-Title", "TurboTikects")
                 .GET()
                 .build();
         HttpResponse<String> response = HttpClient.newHttpClient().send(request, HttpResponse.BodyHandlers.ofString());
-        log.info("OpenAI validateKey → {}", response.statusCode());
+        log.info("OpenRouter validateKey → {}", response.statusCode());
         return buildResult(response.statusCode());
     }
 

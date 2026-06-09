@@ -6,8 +6,10 @@ import com.turbotikects.turbotikectsserver.dto.BulkTranslateRequestDto;
 import com.turbotikects.turbotikectsserver.dto.BulkTranslateResponseDto;
 import com.turbotikects.turbotikectsserver.dto.LlmProviderInfoDto;
 import com.turbotikects.turbotikectsserver.llm.AnthropicLlmProvider;
+import com.turbotikects.turbotikectsserver.llm.DeepSeekLlmProvider;
 import com.turbotikects.turbotikectsserver.llm.GeminiLlmProvider;
 import com.turbotikects.turbotikectsserver.llm.OpenAiLlmProvider;
+import com.turbotikects.turbotikectsserver.llm.OpenRouterLlmProvider;
 import com.turbotikects.turbotikectsserver.security.RequirePermission;
 import com.turbotikects.turbotikectsserver.services.AiSettingsService;
 import com.turbotikects.turbotikectsserver.services.AiTranslationService;
@@ -32,7 +34,7 @@ public class AiSettingsController {
 
     @GetMapping("/providers")
     public List<LlmProviderInfoDto> getProviders() {
-        return List.of(OpenAiLlmProvider.INFO, AnthropicLlmProvider.INFO, GeminiLlmProvider.INFO);
+        return List.of(OpenAiLlmProvider.INFO, AnthropicLlmProvider.INFO, GeminiLlmProvider.INFO, DeepSeekLlmProvider.INFO, OpenRouterLlmProvider.INFO);
     }
 
     @GetMapping("/settings")
@@ -46,7 +48,7 @@ public class AiSettingsController {
     }
 
     @DeleteMapping("/settings/{id}")
-    public void deleteAiSettings(@PathVariable Long aiSettingID){
+    public void deleteAiSettings(@PathVariable("id") Long aiSettingID){
         aiSettingsService.deleteIASetting(aiSettingID);
     }
 
