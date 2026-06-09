@@ -1,0 +1,9 @@
+**/.git
+**/.gitignore
+**/node_modules
+**/build
+**/.gradle
+TurboTikects-server/src/main/resources/static
+uploads
+**/*.md
+**/.env

@@ -1,3 +1,13 @@
+buildscript {
+    repositories { mavenCentral() }
+    dependencies {
+        classpath 'com.guardsquare:proguard-gradle:7.4.2'
+    }
+}
+
+// ProGuardTask import must be at top-level (Groovy import rule)
+import proguard.gradle.ProGuardTask
+
 plugins {
     id 'java'
     id 'org.springframework.boot' version '3.2.5'
@@ -55,19 +65,69 @@ tasks.named('test') {
 
 def frontendDir = file("${projectDir}/../ticketmaster-client")
 
+// OS-aware npm command (npm.cmd is Windows-only)
+def isWindows = System.getProperty('os.name').toLowerCase().contains('windows')
+def npmCmd = isWindows ? ['npm.cmd'] : ['npm']
+
 task npmInstall(type: Exec) {
     workingDir frontendDir
-    commandLine 'npm.cmd', 'install'
+    commandLine(*npmCmd, 'install')
     inputs.file("${frontendDir}/package.json")
     outputs.dir("${frontendDir}/node_modules")
 }
 
 task npmBuild(type: Exec, dependsOn: npmInstall) {
     workingDir frontendDir
-    commandLine 'npm.cmd', 'run', 'build'
+    commandLine(*npmCmd, 'run', 'build')
     inputs.dir("${frontendDir}/src")
     inputs.file("${frontendDir}/package.json")
     outputs.dir("${projectDir}/src/main/resources/static")
 }
 
 processResources.dependsOn(npmBuild)
+
+// ── ProGuard obfuscation (activated only with -Pobfuscate) ──────────────────
+if (project.hasProperty('obfuscate')) {
+
+    // Step 1: Create a plain (non-fat) JAR of the application classes
+    task plainJar(type: Jar, dependsOn: [compileJava, processResources]) {
+        archiveFileName = 'app-plain.jar'
+        destinationDirectory = file("${buildDir}/libs-obfuscation")
+        from(sourceSets.main.output)
+    }
+
+    // Step 2: Run ProGuard on the plain JAR
+    task obfuscate(type: ProGuardTask, dependsOn: plainJar) {
+        configuration("${projectDir}/docker/proguard-rules.pro")
+
+        injars(plainJar.archiveFile)
+        outjars(file("${buildDir}/libs-obfuscation/app-obfuscated.jar"))
+
+        libraryjars(configurations.runtimeClasspath.filter { it.exists() })
+
+        def javaHome = System.getProperty('java.home')
+        ['java.base', 'java.desktop', 'java.sql', 'java.naming',
+         'java.net.http', 'java.xml', 'java.management'].each { mod ->
+            def jmod = file("${javaHome}/jmods/${mod}.jmod")
+            if (jmod.exists()) {
+                libraryjars(jmod, filter: '!**.jar;!module-info.class')
+            }
+        }
+
+        printmapping("${buildDir}/proguard-mapping.txt")
+    }
+
+    // Step 3: Unpack obfuscated JAR back into the classes directory
+    task unpackObfuscated(type: Copy, dependsOn: obfuscate) {
+        def targetDir = sourceSets.main.output.classesDirs.singleFile
+        doFirst {
+            targetDir.deleteDir()
+            targetDir.mkdirs()
+        }
+        from(zipTree(file("${buildDir}/libs-obfuscation/app-obfuscated.jar")))
+        into(targetDir)
+    }
+
+    // Step 4: bootJar uses the obfuscated classes
+    bootJar.dependsOn(unpackObfuscated)
+}

@@ -1,0 +1,39 @@
+services:
+  db:
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: "${DB_PASS}"
+      MYSQL_DATABASE: "${DB_NAME}"
+    volumes:
+      - db_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-p${DB_PASS}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  app:
+    image: "${DOCKER_IMAGE}"
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "${APP_PORT}:3000"
+    environment:
+      DB_HOST: db
+      DB_NAME: "${DB_NAME}"
+      DB_USER: root
+      DB_PASS: "${DB_PASS}"
+      ADMIN_USERNAME: "${ADMIN_USERNAME}"
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD}"
+      ADMIN_DISPLAY_NAME: "${ADMIN_DISPLAY_NAME}"
+      CORS_ORIGINS: "http://localhost:${APP_PORT}"
+    volumes:
+      - uploads:/app/uploads
+
+volumes:
+  db_data:
+  uploads:

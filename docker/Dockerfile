@@ -1,0 +1,43 @@
+# ── Stage 1: Build (JDK 17 + Node 20) ────────────────────────────────────
+FROM eclipse-temurin:17-jdk-jammy AS build
+
+# Install Node.js 20 LTS
+RUN apt-get update && \
+    apt-get install -y ca-certificates curl gnupg && \
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y nodejs && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace
+
+# ── npm dependency layer (re-runs only when package.json changes) ─────────
+COPY ticketmaster-client/package*.json ticketmaster-client/
+RUN npm --prefix ticketmaster-client ci
+
+# ── Gradle dependency layer (re-runs only when build.gradle changes) ──────
+COPY TurboTikects-server/gradlew                          TurboTikects-server/gradlew
+COPY TurboTikects-server/gradle                           TurboTikects-server/gradle
+COPY TurboTikects-server/build.gradle                     TurboTikects-server/build.gradle
+COPY TurboTikects-server/settings.gradle                  TurboTikects-server/settings.gradle
+RUN chmod +x TurboTikects-server/gradlew
+RUN cd TurboTikects-server && ./gradlew dependencies --no-daemon -q 2>/dev/null || true
+
+# ── Full source ────────────────────────────────────────────────────────────
+COPY ticketmaster-client/              ticketmaster-client/
+COPY TurboTikects-server/src           TurboTikects-server/src
+COPY TurboTikects-server/docker        TurboTikects-server/docker
+
+# ── Build: npm (via Gradle npmBuild task) + ProGuard + bootJar ────────────
+RUN cd TurboTikects-server && ./gradlew bootJar -x test --no-daemon -Pobfuscate
+
+# ── Stage 2: Runtime (JRE 17 slim) ────────────────────────────────────────
+FROM eclipse-temurin:17-jre-alpine
+
+WORKDIR /app
+RUN mkdir -p uploads
+
+COPY --from=build /workspace/TurboTikects-server/build/libs/*.jar app.jar
+
+EXPOSE 3000
+
+ENTRYPOINT ["java", "-Djava.security.egd=file:/dev/./urandom", "-jar", "app.jar"]
