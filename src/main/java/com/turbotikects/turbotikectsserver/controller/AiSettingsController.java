@@ -4,6 +4,10 @@ import com.turbotikects.turbotikectsserver.dto.AiSettingTestResultDto;
 import com.turbotikects.turbotikectsserver.dto.AiSettingsDto;
 import com.turbotikects.turbotikectsserver.dto.BulkTranslateRequestDto;
 import com.turbotikects.turbotikectsserver.dto.BulkTranslateResponseDto;
+import com.turbotikects.turbotikectsserver.dto.LlmProviderInfoDto;
+import com.turbotikects.turbotikectsserver.llm.AnthropicLlmProvider;
+import com.turbotikects.turbotikectsserver.llm.GeminiLlmProvider;
+import com.turbotikects.turbotikectsserver.llm.OpenAiLlmProvider;
 import com.turbotikects.turbotikectsserver.security.RequirePermission;
 import com.turbotikects.turbotikectsserver.services.AiSettingsService;
 import com.turbotikects.turbotikectsserver.services.AiTranslationService;
@@ -26,10 +30,14 @@ public class AiSettingsController {
     @Autowired
     AiTranslationService aiTranslationService;
 
+    @GetMapping("/providers")
+    public List<LlmProviderInfoDto> getProviders() {
+        return List.of(OpenAiLlmProvider.INFO, AnthropicLlmProvider.INFO, GeminiLlmProvider.INFO);
+    }
+
     @GetMapping("/settings")
     public List<AiSettingsDto> getAllAiSettings(){
         return aiSettingsService.getAiSettings();
-
     }
 
     @PostMapping("/settings")
@@ -48,7 +56,7 @@ public class AiSettingsController {
     }
 
     @PostMapping("/settings/{id}/test")
-    public AiSettingTestResultDto testAiSettings(@PathVariable Long id) throws URISyntaxException, IOException, InterruptedException {
+    public AiSettingTestResultDto testAiSettings(@PathVariable Long id) throws Exception {
         return aiSettingsService.testIASetting(id);
     }
 

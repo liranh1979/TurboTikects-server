@@ -20,9 +20,6 @@ public class AiSettingsEntity {
     @Column(name = "api_key",  nullable = false)
     private String apiKey;
 
-    @Column(name = "base_url",  nullable = false)
-    private String baseUrl;
-
     @Column(name = "model_name",  nullable = false)
     private String modelName;
 

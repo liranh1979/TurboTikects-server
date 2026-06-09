@@ -2,6 +2,8 @@ package com.turbotikects.turbotikectsserver.llm;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.turbotikects.turbotikectsserver.dto.AiSettingTestResultDto;
+import com.turbotikects.turbotikectsserver.dto.LlmProviderInfoDto;
 import com.turbotikects.turbotikectsserver.dto.llm.LlmStructure;
 import com.turbotikects.turbotikectsserver.entitys.AiSettingsEntity;
 import lombok.extern.slf4j.Slf4j;
@@ -22,6 +24,11 @@ import java.util.Map;
 @Component
 public class GeminiLlmProvider implements LlmProvider {
 
+    private static final String BASE_URL = "https://generativelanguage.googleapis.com";
+
+    public static final LlmProviderInfoDto INFO =
+            new LlmProviderInfoDto("gemini", "Google Gemini", "gemini-2.0-flash");
+
     @Override
     public boolean supports(String providerName) {
         if (providerName == null) return false;
@@ -33,10 +40,8 @@ public class GeminiLlmProvider implements LlmProvider {
     public String send(AiSettingsEntity settings, List<LlmStructure> messages) throws IOException, URISyntaxException, InterruptedException {
         ObjectMapper mapper = new ObjectMapper();
 
-        // Gemini URL: https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={apiKey}
-        String url = buildGeminiUrl(settings);
+        String url = BASE_URL + "/v1beta/models/" + settings.getModelName() + ":generateContent?key=" + settings.getApiKey();
 
-        // Gemini separates system instruction from contents; role is "user" or "model"
         String systemContent = "";
         List<Map<String, Object>> contents = new ArrayList<>();
         for (LlmStructure msg : messages) {
@@ -63,7 +68,7 @@ public class GeminiLlmProvider implements LlmProvider {
                 .build();
 
         HttpResponse<String> response = HttpClient.newHttpClient().send(request, HttpResponse.BodyHandlers.ofString());
-        log.info("Gemini request to {} | response status {}", url, response.statusCode());
+        log.info("Gemini send → {}", response.statusCode());
 
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
             throw new IOException("Gemini API error " + response.statusCode() + ": " + response.body());
@@ -79,13 +84,30 @@ public class GeminiLlmProvider implements LlmProvider {
         return "";
     }
 
-    // Always build the canonical Gemini URL, ignoring whatever path the user may have stored in baseUrl
-    private String buildGeminiUrl(AiSettingsEntity settings) {
-        String base = settings.getBaseUrl().trim();
-        // Strip everything after /v1beta to get a clean root, then rebuild the standard path
-        int v1betaIdx = base.indexOf("/v1beta");
-        String root = v1betaIdx >= 0 ? base.substring(0, v1betaIdx) : base.replaceAll("/+$", "");
-        return root + "/v1beta/models/" + settings.getModelName() + ":generateContent?key=" + settings.getApiKey();
+    @Override
+    public AiSettingTestResultDto validateKey(AiSettingsEntity settings) throws Exception {
+        String url = BASE_URL + "/v1beta/models?key=" + settings.getApiKey();
+        HttpRequest request = HttpRequest.newBuilder(new URI(url))
+                .GET()
+                .build();
+        HttpResponse<String> response = HttpClient.newHttpClient().send(request, HttpResponse.BodyHandlers.ofString());
+        log.info("Gemini validateKey → {}", response.statusCode());
+        return buildResult(response.statusCode());
+    }
+
+    private AiSettingTestResultDto buildResult(int status) {
+        AiSettingTestResultDto result = new AiSettingTestResultDto();
+        if (status == 200) {
+            result.setSuccess(true);
+            result.setMessage("Connected");
+        } else if (status == 400 || status == 403) {
+            result.setSuccess(false);
+            result.setMessage("Invalid API key");
+        } else {
+            result.setSuccess(false);
+            result.setMessage("HTTP " + status);
+        }
+        return result;
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)

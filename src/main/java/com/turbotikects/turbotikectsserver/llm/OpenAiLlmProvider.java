@@ -1,6 +1,8 @@
 package com.turbotikects.turbotikectsserver.llm;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.turbotikects.turbotikectsserver.dto.AiSettingTestResultDto;
+import com.turbotikects.turbotikectsserver.dto.LlmProviderInfoDto;
 import com.turbotikects.turbotikectsserver.dto.llm.LlmResponse;
 import com.turbotikects.turbotikectsserver.dto.llm.LlmStructure;
 import com.turbotikects.turbotikectsserver.entitys.AiSettingsEntity;
@@ -21,34 +23,35 @@ import java.util.Map;
 @Component
 public class OpenAiLlmProvider implements LlmProvider {
 
-    private static final List<String> SUPPORTED = List.of("openai", "ollama", "lmstudio", "lm-studio", "local");
+    private static final String COMPLETIONS_URL = "https://api.openai.com/v1/chat/completions";
+    private static final String MODELS_URL      = "https://api.openai.com/v1/models";
+
+    public static final LlmProviderInfoDto INFO =
+            new LlmProviderInfoDto("openai", "OpenAI", "gpt-4o");
 
     @Override
     public boolean supports(String providerName) {
-        if (providerName == null) return true; // default fallback
-        return SUPPORTED.contains(providerName.toLowerCase());
+        if (providerName == null) return true;
+        return "openai".equalsIgnoreCase(providerName);
     }
 
     @Override
     public String send(AiSettingsEntity settings, List<LlmStructure> messages) throws IOException, URISyntaxException, InterruptedException {
         ObjectMapper mapper = new ObjectMapper();
 
-        String url = normalizeBaseUrl(settings.getBaseUrl()) + "completions";
-
         Map<String, Object> payload = new HashMap<>();
         payload.put("model", settings.getModelName());
         payload.put("messages", messages);
         payload.put("temperature", "0.3");
 
-        HttpRequest request = HttpRequest.newBuilder(new URI(url))
+        HttpRequest request = HttpRequest.newBuilder(new URI(COMPLETIONS_URL))
                 .header("Content-Type", "application/json")
                 .header("Authorization", "Bearer " + settings.getApiKey())
                 .POST(HttpRequest.BodyPublishers.ofString(mapper.writeValueAsString(payload)))
                 .build();
 
         HttpResponse<String> response = HttpClient.newHttpClient().send(request, HttpResponse.BodyHandlers.ofString());
-        log.info("OpenAI request to {} | response status {}", url, response.statusCode());
-        log.info(response.body());
+        log.info("OpenAI send → {}", response.statusCode());
 
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
             throw new IOException("OpenAI API error " + response.statusCode() + ": " + response.body());
@@ -61,8 +64,29 @@ public class OpenAiLlmProvider implements LlmProvider {
         return "";
     }
 
-    private String normalizeBaseUrl(String baseUrl) {
-        String url = baseUrl.trim();
-        return url.endsWith("/") ? url : url + "/";
+    @Override
+    public AiSettingTestResultDto validateKey(AiSettingsEntity settings) throws Exception {
+        HttpRequest request = HttpRequest.newBuilder(new URI(MODELS_URL))
+                .header("Authorization", "Bearer " + settings.getApiKey())
+                .GET()
+                .build();
+        HttpResponse<String> response = HttpClient.newHttpClient().send(request, HttpResponse.BodyHandlers.ofString());
+        log.info("OpenAI validateKey → {}", response.statusCode());
+        return buildResult(response.statusCode());
+    }
+
+    private AiSettingTestResultDto buildResult(int status) {
+        AiSettingTestResultDto result = new AiSettingTestResultDto();
+        if (status == 200) {
+            result.setSuccess(true);
+            result.setMessage("Connected");
+        } else if (status == 401 || status == 403) {
+            result.setSuccess(false);
+            result.setMessage("Invalid API key");
+        } else {
+            result.setSuccess(false);
+            result.setMessage("HTTP " + status);
+        }
+        return result;
     }
 }

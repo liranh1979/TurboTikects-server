@@ -2,6 +2,8 @@ package com.turbotikects.turbotikectsserver.llm;
 
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.turbotikects.turbotikectsserver.dto.AiSettingTestResultDto;
+import com.turbotikects.turbotikectsserver.dto.LlmProviderInfoDto;
 import com.turbotikects.turbotikectsserver.dto.llm.LlmStructure;
 import com.turbotikects.turbotikectsserver.entitys.AiSettingsEntity;
 import lombok.extern.slf4j.Slf4j;
@@ -22,6 +24,12 @@ import java.util.Map;
 @Component
 public class AnthropicLlmProvider implements LlmProvider {
 
+    private static final String MESSAGES_URL = "https://api.anthropic.com/v1/messages";
+    private static final String MODELS_URL   = "https://api.anthropic.com/v1/models";
+
+    public static final LlmProviderInfoDto INFO =
+            new LlmProviderInfoDto("anthropic", "Anthropic (Claude)", "claude-opus-4-7");
+
     @Override
     public boolean supports(String providerName) {
         if (providerName == null) return false;
@@ -33,10 +41,6 @@ public class AnthropicLlmProvider implements LlmProvider {
     public String send(AiSettingsEntity settings, List<LlmStructure> messages) throws IOException, URISyntaxException, InterruptedException {
         ObjectMapper mapper = new ObjectMapper();
 
-        // Always use the canonical Anthropic messages endpoint — extract just the host from whatever the user stored
-        String url = buildAnthropicUrl(settings.getBaseUrl());
-
-        // Anthropic separates the system message from the conversation
         String systemContent = "";
         List<Map<String, String>> conversation = new ArrayList<>();
         for (LlmStructure msg : messages) {
@@ -55,7 +59,7 @@ public class AnthropicLlmProvider implements LlmProvider {
             payload.put("system", systemContent);
         }
 
-        HttpRequest request = HttpRequest.newBuilder(new URI(url))
+        HttpRequest request = HttpRequest.newBuilder(new URI(MESSAGES_URL))
                 .header("Content-Type", "application/json")
                 .header("x-api-key", settings.getApiKey())
                 .header("anthropic-version", "2023-06-01")
@@ -63,7 +67,7 @@ public class AnthropicLlmProvider implements LlmProvider {
                 .build();
 
         HttpResponse<String> response = HttpClient.newHttpClient().send(request, HttpResponse.BodyHandlers.ofString());
-        log.info("Anthropic request to {} | response status {}", url, response.statusCode());
+        log.info("Anthropic send → {}", response.statusCode());
 
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
             throw new IOException("Anthropic API error " + response.statusCode() + ": " + response.body());
@@ -76,10 +80,31 @@ public class AnthropicLlmProvider implements LlmProvider {
         return "";
     }
 
-    // Extract just scheme+host from whatever the user stored and always use the canonical path
-    private String buildAnthropicUrl(String baseUrl) throws URISyntaxException {
-        URI uri = new URI(baseUrl.trim());
-        return uri.getScheme() + "://" + uri.getHost() + "/v1/messages";
+    @Override
+    public AiSettingTestResultDto validateKey(AiSettingsEntity settings) throws Exception {
+        HttpRequest request = HttpRequest.newBuilder(new URI(MODELS_URL))
+                .header("x-api-key", settings.getApiKey())
+                .header("anthropic-version", "2023-06-01")
+                .GET()
+                .build();
+        HttpResponse<String> response = HttpClient.newHttpClient().send(request, HttpResponse.BodyHandlers.ofString());
+        log.info("Anthropic validateKey → {}", response.statusCode());
+        return buildResult(response.statusCode());
+    }
+
+    private AiSettingTestResultDto buildResult(int status) {
+        AiSettingTestResultDto result = new AiSettingTestResultDto();
+        if (status == 200) {
+            result.setSuccess(true);
+            result.setMessage("Connected");
+        } else if (status == 401 || status == 403) {
+            result.setSuccess(false);
+            result.setMessage("Invalid API key");
+        } else {
+            result.setSuccess(false);
+            result.setMessage("HTTP " + status);
+        }
+        return result;
     }
 
     @JsonIgnoreProperties(ignoreUnknown = true)

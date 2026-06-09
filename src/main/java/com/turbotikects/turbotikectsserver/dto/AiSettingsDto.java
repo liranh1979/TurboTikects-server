@@ -21,10 +21,6 @@ public class AiSettingsDto {
     @JsonProperty("api_key")
     private String apiKey;
 
-
-    @JsonProperty("base_url")
-    private String baseUrl;
-
     @JsonProperty("model_name")
     private String modelName;
 
