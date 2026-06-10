@@ -4,10 +4,10 @@ import com.turbotikects.turbotikectsserver.dto.NotificationTemplateDto;
 import com.turbotikects.turbotikectsserver.dto.UpdateNotificationTemplateDto;
 import com.turbotikects.turbotikectsserver.security.RequirePermission;
 import com.turbotikects.turbotikectsserver.services.NotificationService;
-import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import java.util.Map;
 
 @RestController
 @RequestMapping("/api/v1/notifications")
@@ -34,5 +34,11 @@ public class NotificationController {
     @PostMapping("/templates/{id}/rollback")
     public NotificationTemplateDto rollback(@PathVariable Long id) {
         return notificationService.rollbackToDefault(id);
+    }
+
+    /** Diagnose why notifications may not be sending. Pass ?ticketId=X to check a specific ticket's users. */
+    @GetMapping("/diagnose")
+    public Map<String, Object> diagnose(@RequestParam(required = false) Long ticketId) {
+        return notificationService.diagnose(ticketId);
     }
 }

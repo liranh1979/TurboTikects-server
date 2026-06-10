@@ -118,27 +118,113 @@ public class NotificationService {
         }).start();
     }
 
+    // ── Diagnostic helper ─────────────────────────────────────────────────────
+
+    public Map<String, Object> diagnose(Long ticketId) {
+        Map<String, Object> result = new LinkedHashMap<>();
+
+        // Check templates
+        List<String> types = List.of("new_ticket_requester", "new_ticket_responsible",
+                "ticket_updated_requester", "ticket_updated_admin");
+        Map<String, String> templateStatus = new LinkedHashMap<>();
+        for (String t : types) {
+            Optional<NotificationTemplateEntity> opt = templateRepo.findByNotificationType(t);
+            if (opt.isEmpty()) {
+                templateStatus.put(t, "MISSING – run V48 migration or restart server");
+            } else {
+                templateStatus.put(t, opt.get().isEnabled() ? "enabled" : "disabled");
+            }
+        }
+        result.put("templates", templateStatus);
+
+        // Check default sender mailbox
+        Optional<EmailMailboxEntity> mailboxOpt = emailSenderService.getDefaultSender();
+        if (mailboxOpt.isEmpty()) {
+            result.put("defaultMailbox", "MISSING – configure a mailbox and set it as default sender");
+        } else {
+            EmailMailboxEntity m = mailboxOpt.get();
+            result.put("defaultMailbox", Map.of(
+                    "id", m.getId(),
+                    "displayName", m.getDisplayName(),
+                    "email", m.getEmailAddress(),
+                    "canSend", m.getCanSend()
+            ));
+        }
+
+        // Check ticket and its users
+        if (ticketId != null) {
+            ticketRepo.findById(ticketId).ifPresentOrElse(ticket -> {
+                result.put("ticketId", ticketId);
+                result.put("requestUser", diagnoseUser(ticket.getRequestUserId()));
+                result.put("responsibleUser", diagnoseUser(ticket.getResponsibleUserId()));
+            }, () -> result.put("ticket", "NOT FOUND: " + ticketId));
+        }
+
+        return result;
+    }
+
+    private Map<String, Object> diagnoseUser(Integer userId) {
+        if (userId == null) return Map.of("status", "not set");
+        Optional<UserEntity> opt = userRepo.findById(userId.longValue());
+        if (opt.isEmpty()) return Map.of("status", "USER NOT FOUND: " + userId);
+        UserEntity u = opt.get();
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("id", u.getRed_id());
+        m.put("displayName", u.getDisplayName() != null ? u.getDisplayName() : u.getUsername());
+        m.put("email", u.getEmail() != null ? u.getEmail() : "NO EMAIL – set email on this user account");
+        return m;
+    }
+
+    @Autowired
+    private com.turbotikects.turbotikectsserver.repositorys.TicketRepository ticketRepo;
+
     // ── Internal send helpers ─────────────────────────────────────────────────
 
     private void sendNotification(String type, TicketEntity ticket, Long recipientUserId, Integer actorId) {
+        log.info("[Notification] type={} ticketId={} recipientUserId={}", type, ticket.getId(), recipientUserId);
+
         Optional<NotificationTemplateEntity> tmplOpt = templateRepo.findByNotificationType(type);
-        if (tmplOpt.isEmpty() || !tmplOpt.get().isEnabled()) return;
+        if (tmplOpt.isEmpty()) {
+            log.warn("[Notification] SKIPPED – template '{}' not found in DB (run V48 migration)", type);
+            return;
+        }
+        if (!tmplOpt.get().isEnabled()) {
+            log.info("[Notification] SKIPPED – template '{}' is disabled", type);
+            return;
+        }
 
         Optional<EmailMailboxEntity> mailboxOpt = emailSenderService.getDefaultSender();
-        if (mailboxOpt.isEmpty()) return;
+        if (mailboxOpt.isEmpty()) {
+            log.warn("[Notification] SKIPPED – no default sender mailbox configured (Settings → Email Integration)");
+            return;
+        }
 
         UserEntity recipient = userRepo.findById(recipientUserId).orElse(null);
-        if (recipient == null || recipient.getEmail() == null || recipient.getEmail().isBlank()) return;
+        if (recipient == null) {
+            log.warn("[Notification] SKIPPED – recipient user {} not found", recipientUserId);
+            return;
+        }
+        if (recipient.getEmail() == null || recipient.getEmail().isBlank()) {
+            log.warn("[Notification] SKIPPED – recipient user {} ('{}') has no email address configured",
+                    recipientUserId, recipient.getDisplayName() != null ? recipient.getDisplayName() : recipient.getUsername());
+            return;
+        }
 
         NotificationTemplateEntity tmpl = tmplOpt.get();
-        String requesterName  = resolveDisplayName(ticket.getRequestUserId());
+        String requesterName   = resolveDisplayName(ticket.getRequestUserId());
         String responsibleName = resolveDisplayName(ticket.getResponsibleUserId());
 
         String subject = resolvePlaceholders(tmpl.getSubjectTemplate(), ticket, requesterName, responsibleName);
         String body    = resolvePlaceholders(tmpl.getBodyTemplate(),    ticket, requesterName, responsibleName);
 
+        log.info("[Notification] Sending '{}' to {} for ticket {}", type, recipient.getEmail(), ticket.getId());
         emailSenderService.sendReply(mailboxOpt.get(), recipient.getEmail(), subject, body, ticket.getId());
-        writeOutboundActivity(ticket.getId(), actorId, recipient.getEmail(), subject, body);
+
+        try {
+            writeOutboundActivity(ticket.getId(), actorId, recipient.getEmail(), subject, body);
+        } catch (Exception ex) {
+            log.warn("[Notification] Could not write activity log for ticket {} ({})", ticket.getId(), ex.getMessage());
+        }
     }
 
     private void notifyGroup(String type, TicketEntity ticket, Long groupId, Integer actorId) {
