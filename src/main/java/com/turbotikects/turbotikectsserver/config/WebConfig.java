@@ -49,7 +49,8 @@ public class WebConfig implements WebMvcConfigurer {
             "/api/v1/saml2/**",
             "/api/v1/attachments/download",
             "/api/v1/attachments/preview",
-            "/api/v1/attachments/stream"
+            "/api/v1/attachments/stream",
+            "/api/v1/email/oauth2/*/callback"
         };
 
         registry.addInterceptor(authInterceptor)

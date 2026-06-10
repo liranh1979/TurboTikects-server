@@ -61,6 +61,19 @@ public class AttachmentController {
         return attachmentService.issueToken(id);
     }
 
+    @GetMapping("/{id}/inline")
+    public ResponseEntity<ByteArrayResource> inline(@PathVariable Long id) throws IOException {
+        AttachmentService.ResolvedAttachment resolved = attachmentService.loadById(id);
+        AttachmentFileEntity fileEntity = resolved.fileEntity();
+        byte[] data = fileStorage.retrieve(fileEntity.getStoredFilename());
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_DISPOSITION,
+                        "inline; filename=\"" + sanitizeFilename(resolved.attachment().getOriginalFilename()) + "\"")
+                .contentType(MediaType.parseMediaType(fileEntity.getMimeType()))
+                .contentLength(data.length)
+                .body(new ByteArrayResource(data));
+    }
+
     @GetMapping("/download")
     public ResponseEntity<ByteArrayResource> download(@RequestParam String token) throws IOException {
         AttachmentService.ResolvedAttachment resolved = attachmentService.resolveToken(token);

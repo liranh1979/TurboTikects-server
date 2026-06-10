@@ -26,9 +26,16 @@ public class TicketActivityLogEntity {
     @Column(nullable = false, length = 32)
     private String operation;
 
+    @Column(name = "activity_type", nullable = false, length = 32)
+    private String activityType = "manual";
+
     @JdbcTypeCode(SqlTypes.JSON)
     @Column(columnDefinition = "json", nullable = false)
     private Map<String, Object> changes;
+
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(columnDefinition = "json")
+    private Map<String, Object> metadata;
 
     @Column(name = "created_at")
     private LocalDateTime createdAt;

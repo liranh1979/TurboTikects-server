@@ -4,6 +4,7 @@ import com.turbotikects.turbotikectsserver.dto.*;
 import com.turbotikects.turbotikectsserver.entitys.*;
 import com.turbotikects.turbotikectsserver.repositorys.*;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -364,6 +365,44 @@ public class TicketService {
         return activityRepo.findByTicketIdOrderByCreatedAtDesc(ticketId);
     }
 
+    public org.springframework.data.domain.Page<com.turbotikects.turbotikectsserver.dto.TicketActivityLogDto> getActivityPaged(
+            Long ticketId, int page, int size, String type) {
+        org.springframework.data.domain.Pageable pageable =
+                org.springframework.data.domain.PageRequest.of(page, size);
+        org.springframework.data.domain.Page<TicketActivityLogEntity> entityPage;
+        if (type == null || type.isBlank() || "all".equalsIgnoreCase(type)) {
+            entityPage = activityRepo.findByTicketIdOrderByCreatedAtDesc(ticketId, pageable);
+        } else {
+            entityPage = activityRepo.findByTicketIdAndActivityTypeOrderByCreatedAtDesc(ticketId, type, pageable);
+        }
+
+        // Gather actor IDs for display names
+        Set<Long> actorIds = entityPage.getContent().stream()
+                .map(e -> (long) e.getActorId())
+                .collect(Collectors.toSet());
+        Map<Long, String> displayNames = new HashMap<>();
+        if (!actorIds.isEmpty()) {
+            userRepo.findAllById(new ArrayList<>(actorIds))
+                    .forEach(u -> displayNames.put(u.getRed_id(),
+                            u.getDisplayName() != null ? u.getDisplayName() : u.getUsername()));
+        }
+
+        return entityPage.map(e -> {
+            com.turbotikects.turbotikectsserver.dto.TicketActivityLogDto dto =
+                    new com.turbotikects.turbotikectsserver.dto.TicketActivityLogDto();
+            dto.setId(e.getId());
+            dto.setTicketId(e.getTicketId());
+            dto.setActorId(e.getActorId());
+            dto.setActorDisplayName(displayNames.get((long) e.getActorId()));
+            dto.setOperation(e.getOperation());
+            dto.setActivityType(e.getActivityType());
+            dto.setChanges(e.getChanges());
+            dto.setMetadata(e.getMetadata());
+            dto.setCreatedAt(e.getCreatedAt());
+            return dto;
+        });
+    }
+
     // ── HELPERS ───────────────────────────────────────────────────────────────
 
     private void enqueue(Long ticketId, String operation, Map<String, Object> payload, Integer actorId) {
@@ -377,12 +416,86 @@ public class TicketService {
     }
 
     private void writeActivityLog(Long ticketId, Integer actorId, String operation, Map<String, Object> changes) {
+        writeActivityLog(ticketId, actorId, operation, "manual", changes);
+    }
+
+    private void writeActivityLog(Long ticketId, Integer actorId, String operation,
+                                   String activityType, Map<String, Object> changes) {
         TicketActivityLogEntity logEntry = new TicketActivityLogEntity();
         logEntry.setTicketId(ticketId);
         logEntry.setActorId(actorId);
         logEntry.setOperation(operation);
+        logEntry.setActivityType(activityType);
         logEntry.setChanges(changes);
         activityRepo.save(logEntry);
+    }
+
+    // ── AI SOLUTION ───────────────────────────────────────────────────────────
+
+    @Autowired
+    private EmailSenderService emailSenderService;
+
+    public Map<String, Object> saveAiSolution(Long ticketId, String solution, Integer actorId) {
+        if (!ticketRepo.existsById(ticketId)) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Ticket not found");
+        }
+        writeActivityLog(ticketId, actorId != null ? actorId : 1, "AI_SOLUTION", "ai_solution",
+                Map.of("body", solution));
+        return Map.of("status", "ok");
+    }
+
+    public Map<String, Object> sendSolutionEmail(Long ticketId, Long activityId, Integer actorId) {
+        TicketEntity ticket = ticketRepo.findById(ticketId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Ticket not found"));
+
+        TicketActivityLogEntity activity = activityRepo.findById(activityId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Activity not found"));
+
+        if (ticket.getRequestUserId() == null) {
+            return Map.of("success", false, "message", "Ticket has no request user");
+        }
+
+        UserEntity requestUser = userRepo.findById(ticket.getRequestUserId().longValue()).orElse(null);
+        if (requestUser == null || requestUser.getEmail() == null || requestUser.getEmail().isBlank()) {
+            return Map.of("success", false, "message", "Request user has no email address configured");
+        }
+
+        Optional<EmailMailboxEntity> mailboxOpt = emailSenderService.getDefaultSender();
+        if (mailboxOpt.isEmpty()) {
+            return Map.of("success", false, "message", "No default sender mailbox configured");
+        }
+
+        String solution = activity.getChanges() != null
+                ? activity.getChanges().getOrDefault("body", "").toString() : "";
+        String subject = "[TT-" + ticketId + "] " + ticket.getTitle();
+        String htmlBody = buildSolutionEmailHtml(ticket, solution);
+
+        emailSenderService.sendReply(mailboxOpt.get(), requestUser.getEmail(), subject, htmlBody, ticketId);
+
+        writeActivityLog(ticketId, actorId != null ? actorId : 1, "EMAIL_SOLUTION_SENT", "email_outbound",
+                Map.of("to", requestUser.getEmail(), "subject", subject, "body", htmlBody));
+
+        return Map.of("success", true, "message", "Email sent to " + requestUser.getEmail());
+    }
+
+    private String buildSolutionEmailHtml(TicketEntity ticket, String solution) {
+        String desc = ticket.getDescription() != null ? ticket.getDescription() : "<em>No description provided.</em>";
+        return "<div style='font-family:Arial,sans-serif;max-width:600px;color:#1a202c'>"
+             + "<div style='background:#eff6ff;border-left:4px solid #3b82f6;padding:12px 16px;margin-bottom:16px;border-radius:0 6px 6px 0'>"
+             + "<strong>Ticket [TT-" + ticket.getId() + "]:</strong> " + escapeHtml(ticket.getTitle())
+             + "</div>"
+             + "<p style='font-weight:600;margin:0 0 8px'>Your request:</p>"
+             + "<div style='padding:12px;background:#f8fafc;border-radius:6px;margin-bottom:16px'>" + desc + "</div>"
+             + "<p style='font-weight:600;margin:0 0 8px'>AI-assisted solution:</p>"
+             + "<div style='padding:12px;background:#f0fdf4;border-left:4px solid #059669;border-radius:0 6px 6px 0'>" + solution + "</div>"
+             + "<hr style='margin:24px 0;border:none;border-top:1px solid #e2e8f0'/>"
+             + "<p style='color:#94a3b8;font-size:12px;margin:0'>This message was sent via the TurboTickets helpdesk system.</p>"
+             + "</div>";
+    }
+
+    private String escapeHtml(String s) {
+        if (s == null) return "";
+        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
     }
 
     private TicketDetailDto toDetailDto(TicketEntity ticket) {

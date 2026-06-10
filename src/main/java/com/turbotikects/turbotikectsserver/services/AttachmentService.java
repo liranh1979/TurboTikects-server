@@ -41,6 +41,47 @@ public class AttachmentService {
         this.tokenStore = tokenStore;
     }
 
+    public AttachmentDto uploadBytes(String entityType, Long entityId,
+                                     byte[] bytes, String mimeType, String filename,
+                                     Integer uploadedBy) throws IOException {
+        String cleanMime = mimeType != null ? mimeType.split(";")[0].trim() : "application/octet-stream";
+        String hash = sha256(bytes);
+        String ext = extractExtension(filename);
+        String storedFilename = hash.substring(0, 2) + "/" + hash + (ext.isEmpty() ? "" : "." + ext);
+
+        AttachmentFileEntity fileEntity = attachmentFileRepo.findByContentHash(hash).orElse(null);
+        if (fileEntity == null) {
+            fileStorage.store(new ByteArrayInputStream(bytes), storedFilename, bytes.length);
+            fileEntity = new AttachmentFileEntity();
+            fileEntity.setContentHash(hash);
+            fileEntity.setStoredFilename(storedFilename);
+            fileEntity.setMimeType(cleanMime);
+            fileEntity.setFileSize((long) bytes.length);
+            fileEntity.setRefCount(1);
+            fileEntity = attachmentFileRepo.save(fileEntity);
+        } else {
+            fileEntity.setRefCount(fileEntity.getRefCount() + 1);
+            fileEntity = attachmentFileRepo.save(fileEntity);
+        }
+
+        AttachmentEntity attachment = new AttachmentEntity();
+        attachment.setEntityType(entityType);
+        attachment.setEntityId(entityId);
+        attachment.setOriginalFilename(filename != null ? filename : "inline-image");
+        attachment.setFileId(fileEntity.getId());
+        attachment.setUploadedBy(uploadedBy);
+        attachment = attachmentRepo.save(attachment);
+        return toDto(attachment, fileEntity);
+    }
+
+    public ResolvedAttachment loadById(Long id) {
+        AttachmentEntity attachment = attachmentRepo.findById(id)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+        AttachmentFileEntity fileEntity = attachmentFileRepo.findById(attachment.getFileId())
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+        return new ResolvedAttachment(attachment, fileEntity);
+    }
+
     public List<AttachmentDto> upload(String entityType, Long entityId,
                                       MultipartFile[] files, Integer uploadedBy) throws IOException {
         List<AttachmentDto> results = new ArrayList<>();

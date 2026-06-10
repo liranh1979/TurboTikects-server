@@ -56,6 +56,10 @@ dependencies {
 
     implementation 'org.springframework.ldap:spring-ldap-core'
 
+    // Email: JavaMail for IMAP/SMTP; Jsoup for HTML parsing + signature stripping
+    implementation 'org.springframework.boot:spring-boot-starter-mail'
+    implementation 'org.jsoup:jsoup:1.17.2'
+
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
 }
 

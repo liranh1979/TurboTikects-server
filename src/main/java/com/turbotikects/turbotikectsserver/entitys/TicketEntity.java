@@ -48,6 +48,9 @@ public class TicketEntity {
     @Column(nullable = false)
     private int version;
 
+    @Column(name = "source_type", length = 32)
+    private String sourceType = "manual";
+
     @Column(name = "created_at")
     private LocalDateTime createdAt;
 

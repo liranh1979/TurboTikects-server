@@ -2,6 +2,7 @@ package com.turbotikects.turbotikectsserver.controller;
 
 import com.turbotikects.turbotikectsserver.dto.*;
 import com.turbotikects.turbotikectsserver.entitys.TicketActivityLogEntity;
+import com.turbotikects.turbotikectsserver.dto.TicketActivityLogDto;
 import com.turbotikects.turbotikectsserver.security.RequirePermission;
 import com.turbotikects.turbotikectsserver.services.TicketAiService;
 import com.turbotikects.turbotikectsserver.services.TicketService;
@@ -33,6 +34,13 @@ public class TicketController {
         this.ticketService = ticketService;
         this.ticketAiService = ticketAiService;
         this.ticketSseService = ticketSseService;
+    }
+
+    // ── SSE STREAM ────────────────────────────────────────────────────────────
+
+    @GetMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter stream() {
+        return ticketSseService.subscribe();
     }
 
     // ── LIST ──────────────────────────────────────────────────────────────────
@@ -183,11 +191,24 @@ public class TicketController {
         }
     }
 
-    // ── SSE STREAM ────────────────────────────────────────────────────────────
+    // ── AI SOLUTION ───────────────────────────────────────────────────────────
 
-    @GetMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public SseEmitter stream() {
-        return ticketSseService.subscribe();
+    @PostMapping("/{id}/activity/ai-solution")
+    public ResponseEntity<Map<String, Object>> saveAiSolution(
+            @PathVariable Long id,
+            @RequestBody SaveAiSolutionRequestDto dto,
+            HttpServletRequest request) {
+        Integer userId = currentUserId(request);
+        return ResponseEntity.ok(ticketService.saveAiSolution(id, dto.getSolution(), userId));
+    }
+
+    @PostMapping("/{id}/activity/{activityId}/send-solution-email")
+    public ResponseEntity<Map<String, Object>> sendSolutionEmail(
+            @PathVariable Long id,
+            @PathVariable Long activityId,
+            HttpServletRequest request) {
+        Integer userId = currentUserId(request);
+        return ResponseEntity.ok(ticketService.sendSolutionEmail(id, activityId, userId));
     }
 
     // ── ACTIVITY LOG ──────────────────────────────────────────────────────────
@@ -195,6 +216,15 @@ public class TicketController {
     @GetMapping("/{id}/activity-log")
     public List<TicketActivityLogEntity> getActivityLog(@PathVariable Long id) {
         return ticketService.getActivityLog(id);
+    }
+
+    @GetMapping("/{id}/activity")
+    public org.springframework.data.domain.Page<TicketActivityLogDto> getActivityPaged(
+            @PathVariable Long id,
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size,
+            @RequestParam(defaultValue = "all") String type) {
+        return ticketService.getActivityPaged(id, page, size, type);
     }
 
     // ── SESSION HELPERS ───────────────────────────────────────────────────────

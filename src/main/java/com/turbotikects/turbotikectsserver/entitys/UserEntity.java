@@ -36,6 +36,9 @@ public class UserEntity {
     @Column(name = "source_type", nullable = false)
     private int sourceType = 0;
 
+    @Column(name = "email")
+    private String email;
+
     @Column(name = "ldap_external_id")
     private String ldapExternalId;
 
