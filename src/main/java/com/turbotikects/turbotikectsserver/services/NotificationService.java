@@ -65,11 +65,7 @@ public class NotificationService {
     public void onTicketCreated(TicketEntity ticket, Integer actorId) {
         new Thread(() -> {
             try {
-                boolean isSelfCreated = "manual".equals(ticket.getSourceType())
-                        && ticket.getRequestUserId() != null
-                        && ticket.getRequestUserId().equals(actorId);
-
-                if (!isSelfCreated && ticket.getRequestUserId() != null) {
+                if (ticket.getRequestUserId() != null) {
                     sendNotification("new_ticket_requester", ticket, ticket.getRequestUserId().longValue(), actorId);
                 }
 
@@ -92,12 +88,14 @@ public class NotificationService {
                 Integer responsibleUserId  = ticket.getResponsibleUserId();
                 Integer responsibleGroupId = ticket.getResponsibleGroupId();
 
-                // Notify requester if someone else made the change
-                if (requestUserId != null && !requestUserId.equals(actorId)) {
+                // Notify requester unless they are the responsible admin who made the change
+                // (always notify requester — they should know their ticket was updated)
+                if (requestUserId != null
+                        && !(requestUserId.equals(actorId) && requestUserId.equals(responsibleUserId))) {
                     sendNotification("ticket_updated_requester", ticket, requestUserId.longValue(), actorId);
                 }
 
-                // Notify responsible if someone else made the change
+                // Notify responsible admin only if someone else made the change
                 if (responsibleUserId != null && !responsibleUserId.equals(actorId)) {
                     sendNotification("ticket_updated_admin", ticket, responsibleUserId.longValue(), actorId);
                 } else if (responsibleUserId == null && responsibleGroupId != null) {
