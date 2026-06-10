@@ -12,6 +12,7 @@ public class UserListItemDto {
     private String username;
     @JsonProperty("display_name")
     private String displayName;
+    private String email;
     @JsonProperty("is_super_admin")
     private boolean superAdmin;
     private Map<String, Object> metadata;

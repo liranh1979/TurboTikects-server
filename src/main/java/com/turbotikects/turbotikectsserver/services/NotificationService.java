@@ -65,8 +65,9 @@ public class NotificationService {
     public void onTicketCreated(TicketEntity ticket, Integer actorId) {
         new Thread(() -> {
             try {
-                if (ticket.getRequestUserId() != null) {
-                    sendNotification("new_ticket_requester", ticket, ticket.getRequestUserId().longValue(), actorId);
+                Integer requestUserId = resolveRequestUserId(ticket);
+                if (requestUserId != null) {
+                    sendNotification("new_ticket_requester", ticket, requestUserId.longValue(), actorId);
                 }
 
                 if (ticket.getResponsibleUserId() != null) {
@@ -84,7 +85,7 @@ public class NotificationService {
                                  Integer previousResponsibleUserId, Integer previousResponsibleGroupId) {
         new Thread(() -> {
             try {
-                Integer requestUserId    = ticket.getRequestUserId();
+                Integer requestUserId    = resolveRequestUserId(ticket);
                 Integer responsibleUserId  = ticket.getResponsibleUserId();
                 Integer responsibleGroupId = ticket.getResponsibleGroupId();
 
@@ -155,7 +156,11 @@ public class NotificationService {
         if (ticketId != null) {
             ticketRepo.findById(ticketId).ifPresentOrElse(ticket -> {
                 result.put("ticketId", ticketId);
-                result.put("requestUser", diagnoseUser(ticket.getRequestUserId()));
+                Integer effectiveRequestUserId = resolveRequestUserId(ticket);
+                result.put("requestUserId_column", ticket.getRequestUserId());
+                result.put("requestUserId_ticketData", ticket.getTicketData() != null ? ticket.getTicketData().get("request_user") : null);
+                result.put("requestUserId_effective", effectiveRequestUserId);
+                result.put("requestUser", diagnoseUser(effectiveRequestUserId));
                 result.put("responsibleUser", diagnoseUser(ticket.getResponsibleUserId()));
             }, () -> result.put("ticket", "NOT FOUND: " + ticketId));
         }
@@ -179,6 +184,28 @@ public class NotificationService {
     private com.turbotikects.turbotikectsserver.repositorys.TicketRepository ticketRepo;
 
     // ── Internal send helpers ─────────────────────────────────────────────────
+
+    /**
+     * Returns the effective request-user ID for notification purposes.
+     * Prefers ticketData["request_user"] (the user-picker field set by the admin in the form)
+     * over the requestUserId column (which is set to the creator/actor by default).
+     */
+    private Integer resolveRequestUserId(TicketEntity ticket) {
+        if (ticket.getTicketData() != null) {
+            Object raw = ticket.getTicketData().get("request_user");
+            if (raw != null) {
+                String val = raw.toString().trim();
+                if (!val.isEmpty() && !val.equals("null")) {
+                    try {
+                        return Integer.parseInt(val);
+                    } catch (NumberFormatException e) {
+                        log.warn("[Notification] ticketData.request_user is not a valid integer: '{}'", val);
+                    }
+                }
+            }
+        }
+        return ticket.getRequestUserId();
+    }
 
     private void sendNotification(String type, TicketEntity ticket, Long recipientUserId, Integer actorId) {
         log.info("[Notification] type={} ticketId={} recipientUserId={}", type, ticket.getId(), recipientUserId);
@@ -211,7 +238,7 @@ public class NotificationService {
         }
 
         NotificationTemplateEntity tmpl = tmplOpt.get();
-        String requesterName   = resolveDisplayName(ticket.getRequestUserId());
+        String requesterName   = resolveDisplayName(resolveRequestUserId(ticket));
         String responsibleName = resolveDisplayName(ticket.getResponsibleUserId());
 
         String subject = resolvePlaceholders(tmpl.getSubjectTemplate(), ticket, requesterName, responsibleName);

@@ -42,6 +42,7 @@ public class UserManagementService {
             dto.setId(u.getRed_id());
             dto.setUsername(u.getUsername());
             dto.setDisplayName(u.getDisplayName());
+            dto.setEmail(u.getEmail());
             dto.setSuperAdmin(u.isSuperAdmin());
             dto.setMetadata(u.getMetadata());
             dto.setPersonalPermissions(permMap.getOrDefault(u.getRed_id(), List.of()));
@@ -61,12 +62,15 @@ public class UserManagementService {
         user.setSuperAdmin(false);
         user.setMetadata(new HashMap<>());
         user.setPassword(HashUtils.sha1(dto.getUsername().trim().toLowerCase() + "_" + dto.getPassword()));
+        if (dto.getEmail() != null && !dto.getEmail().isBlank())
+            user.setEmail(dto.getEmail().trim().toLowerCase());
         userRepository.save(user);
 
         UserListItemDto result = new UserListItemDto();
         result.setId(user.getRed_id());
         result.setUsername(user.getUsername());
         result.setDisplayName(user.getDisplayName());
+        result.setEmail(user.getEmail());
         result.setSuperAdmin(false);
         result.setMetadata(user.getMetadata());
         result.setPersonalPermissions(List.of());
@@ -82,6 +86,9 @@ public class UserManagementService {
 
         if (dto.getPassword() != null && !dto.getPassword().isBlank())
             user.setPassword(HashUtils.sha1(user.getUsername() + "_" + dto.getPassword()));
+
+        if (dto.getEmail() != null)
+            user.setEmail(dto.getEmail().isBlank() ? null : dto.getEmail().trim().toLowerCase());
 
         if (dto.getMetadata() != null) {
             Map<String, Object> merged = user.getMetadata() != null
@@ -100,6 +107,7 @@ public class UserManagementService {
         result.setId(user.getRed_id());
         result.setUsername(user.getUsername());
         result.setDisplayName(user.getDisplayName());
+        result.setEmail(user.getEmail());
         result.setSuperAdmin(user.isSuperAdmin());
         result.setMetadata(user.getMetadata());
         result.setPersonalPermissions(permissionService.getPersonalPermissions(id));

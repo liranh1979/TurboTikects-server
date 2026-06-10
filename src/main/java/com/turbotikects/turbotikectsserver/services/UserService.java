@@ -61,11 +61,15 @@ public class UserService {
     }
 
     public UserDto login(LoginRequest req) {
-        String username = normalizeUsername(req.getUsername());
+        String raw = req.getUsername() != null ? req.getUsername().trim() : "";
         String password = req.getPassword();
 
-        // Path 1: user already exists in the local DB
-        Optional<UserEntity> found = userRepository.findByUsername(username);
+        // Try the username exactly as typed first (supports email-as-username for local accounts).
+        // Fall back to normalization only when no exact match exists, so that LDAP/Azure users
+        // who type DOMAIN\\user or user@tenant.com still resolve correctly.
+        Optional<UserEntity> found = userRepository.findByUsername(raw.toLowerCase());
+        String username = found.isPresent() ? raw.toLowerCase() : normalizeUsername(raw);
+        if (found.isEmpty()) found = userRepository.findByUsername(username);
         if (found.isPresent()) {
             UserEntity user = found.get();
             if (user.getSourceType() == 1) {
