@@ -188,6 +188,10 @@ public class TicketService {
         event.setOperation("TICKET_CREATED");
         sseService.publish(event);
 
+        // Notifications (async)
+        final TicketEntity savedTicket = ticket;
+        notificationService.onTicketCreated(savedTicket, actorId);
+
         return toDetailDto(ticket);
     }
 
@@ -204,6 +208,10 @@ public class TicketService {
         }
 
         Map<String, Object> changes = new LinkedHashMap<>();
+
+        // Capture pre-update responsible values for notification comparison
+        final Integer previousResponsibleUserId  = ticket.getResponsibleUserId();
+        final Integer previousResponsibleGroupId = ticket.getResponsibleGroupId();
 
         if (dto.getTitle() != null && !dto.getTitle().equals(ticket.getTitle())) {
             changes.put("title", Map.of("from", ticket.getTitle(), "to", dto.getTitle()));
@@ -264,6 +272,13 @@ public class TicketService {
         event.setNewVersion(ticket.getVersion());
         event.setChangedFields(new ArrayList<>(changes.keySet()));
         sseService.publish(event);
+
+        // Notifications (async, only when something actually changed)
+        if (!changes.isEmpty()) {
+            final TicketEntity savedTicket = ticket;
+            notificationService.onTicketPatched(savedTicket, actorId,
+                    previousResponsibleUserId, previousResponsibleGroupId);
+        }
 
         return toDetailDto(ticket);
     }
@@ -434,6 +449,9 @@ public class TicketService {
 
     @Autowired
     private EmailSenderService emailSenderService;
+
+    @Autowired
+    private NotificationService notificationService;
 
     public Map<String, Object> saveAiSolution(Long ticketId, String solution, Integer actorId) {
         if (!ticketRepo.existsById(ticketId)) {
