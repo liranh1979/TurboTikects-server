@@ -60,9 +60,12 @@ public class TicketController {
                 && (caller.isSuperAdmin()
                     || (caller.getEffectivePermissions() != null
                         && caller.getEffectivePermissions().contains("TICKET_MANAGER")));
-        Integer filterUserId = isManager ? null : (caller != null ? caller.getUserId().intValue() : null);
-        // Company-scoped admins see only their company's tickets; super admins and no-company admins see all
         Integer companyId = (caller != null && !caller.isSuperAdmin()) ? caller.getCompanyId() : null;
+        // Company-scoped admins (any non-super-admin with a company assigned) see all tickets in
+        // their company — do not restrict to their own tickets regardless of TICKET_MANAGER.
+        boolean isCompanyScoped = companyId != null;
+        Integer filterUserId = (isManager || isCompanyScoped) ? null
+                : (caller != null ? caller.getUserId().intValue() : null);
         return ticketService.getPage(cursor, size, search, status, templateId, labelIds, responsibleUserId, filterUserId, companyId);
     }
 

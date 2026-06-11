@@ -38,6 +38,9 @@ public class AuthInterceptor implements HandlerInterceptor {
             return false;
         }
 
+        // Always read companyId fresh from DB so changes made after login take effect immediately
+        user.setCompanyId(userService.getEffectiveCompanyId(user.getUserId()));
+
         request.setAttribute("currentUser", user);
         return true;
     }

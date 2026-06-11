@@ -130,6 +130,10 @@ public class UserService {
         return buildUserDto(user);
     }
 
+    public Integer getEffectiveCompanyId(Long userId) {
+        return userRepository.findById(userId).map(u -> u.getCompanyId()).orElse(null);
+    }
+
     private UserDto buildUserDto(UserEntity user) {
         UserDto dto = new UserDto();
         dto.setUserId(user.getRed_id());
