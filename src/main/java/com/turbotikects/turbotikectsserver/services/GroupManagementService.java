@@ -46,8 +46,10 @@ public class GroupManagementService {
         this.permissionService = permissionService;
     }
 
-    public List<GroupListItemDto> getAllGroups() {
-        List<GroupEntity> groups = groupRepository.findAll();
+    public List<GroupListItemDto> getAllGroups(Integer callerCompanyId) {
+        List<GroupEntity> groups = callerCompanyId != null
+                ? groupRepository.findByCompanyId(callerCompanyId)
+                : groupRepository.findAll();
 
         Map<Long, Long> memberCounts = groupMemberRepository.findAll().stream()
                 .collect(Collectors.groupingBy(GroupMemberEntity::getGroupId, Collectors.counting()));

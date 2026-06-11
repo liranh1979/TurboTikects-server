@@ -50,14 +50,14 @@ public class TicketService {
     public List<TicketListItemDto> getPage(Long cursor, int size, String search,
                                            String status, Long templateId,
                                            List<Long> labelIds, Integer responsibleUserId,
-                                           Integer filterUserId) {
+                                           Integer filterUserId, Integer companyId) {
         List<TicketEntity> tickets;
         if (search != null && !search.isBlank()) {
             tickets = filterUserId != null
-                    ? ticketRepo.searchPageByUser(search + "*", cursor, size, filterUserId)
-                    : ticketRepo.searchPage(search + "*", cursor, size);
+                    ? ticketRepo.searchPageByUser(search + "*", cursor, size, filterUserId, companyId)
+                    : ticketRepo.searchPage(search + "*", cursor, size, companyId);
         } else {
-            tickets = ticketRepo.findPage(cursor, size, status, templateId, responsibleUserId, filterUserId);
+            tickets = ticketRepo.findPage(cursor, size, status, templateId, responsibleUserId, filterUserId, companyId);
         }
 
         if (tickets.isEmpty()) return Collections.emptyList();
@@ -157,7 +157,12 @@ public class TicketService {
         ticket.setStatus(dto.getStatus() != null ? dto.getStatus() : "new");
         ticket.setTemplateId(dto.getTemplateId());
         ticket.setTemplateVersionId(dto.getTemplateVersionId());
-        ticket.setRequestUserId(dto.getRequestUserId() != null ? dto.getRequestUserId() : actorId);
+        Integer reqUserId = dto.getRequestUserId() != null ? dto.getRequestUserId() : actorId;
+        ticket.setRequestUserId(reqUserId);
+        // Inherit company from the request user
+        Integer reqUserCompany = userRepo.findById(reqUserId.longValue())
+                .map(u -> u.getCompanyId()).orElse(null);
+        if (reqUserCompany != null) ticket.setCompanyId(reqUserCompany);
         ticket.setResponsibleUserId(dto.getResponsibleUserId());
         ticket.setResponsibleGroupId(dto.getResponsibleGroupId());
         ticket.setTicketData(dto.getTicketData());

@@ -97,8 +97,9 @@ public class LdapController {
     }
 
     @PostMapping("/configs/{id}/sync")
-    public Map<String, String> triggerSync(@PathVariable Long id) {
-        String taskId = ldapSyncService.startSync(id);
+    public Map<String, String> triggerSync(@PathVariable Long id,
+                                           @RequestParam(required = false) Integer companyId) {
+        String taskId = ldapSyncService.startSync(id, companyId);
         return Map.of("taskId", taskId);
     }
 }

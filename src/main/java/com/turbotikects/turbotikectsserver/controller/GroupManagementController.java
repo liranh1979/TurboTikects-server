@@ -5,8 +5,10 @@ import com.turbotikects.turbotikectsserver.dto.CreateGroupDto;
 import com.turbotikects.turbotikectsserver.dto.GroupListItemDto;
 import com.turbotikects.turbotikectsserver.dto.GroupMemberDto;
 import com.turbotikects.turbotikectsserver.dto.UpdateGroupDto;
+import com.turbotikects.turbotikectsserver.dto.UserDto;
 import com.turbotikects.turbotikectsserver.security.RequirePermission;
 import com.turbotikects.turbotikectsserver.services.GroupManagementService;
+import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
 
@@ -25,8 +27,10 @@ public class GroupManagementController {
     }
 
     @GetMapping
-    public List<GroupListItemDto> getAllGroups() {
-        return groupManagementService.getAllGroups();
+    public List<GroupListItemDto> getAllGroups(HttpServletRequest request) {
+        UserDto caller = (UserDto) request.getAttribute("currentUser");
+        Integer companyId = (caller != null && !caller.isSuperAdmin()) ? caller.getCompanyId() : null;
+        return groupManagementService.getAllGroups(companyId);
     }
 
     @PostMapping

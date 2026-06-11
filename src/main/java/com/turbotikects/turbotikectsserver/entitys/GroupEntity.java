@@ -23,4 +23,7 @@ public class GroupEntity {
     @JdbcTypeCode(SqlTypes.JSON)
     @Column(name = "group_metadata", columnDefinition = "json")
     private Map<String, Object> metadata;
+
+    @Column(name = "company_id")
+    private Integer companyId;
 }

@@ -14,4 +14,6 @@ public class UpdateUserDto {
     private String email;
     private Map<String, Object> metadata;
     private List<String> permissions; // null = no change; super admin only
+    @com.fasterxml.jackson.annotation.JsonProperty("company_id")
+    private Integer companyId;       // null = no change; super admin only
 }

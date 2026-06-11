@@ -61,7 +61,9 @@ public class TicketController {
                     || (caller.getEffectivePermissions() != null
                         && caller.getEffectivePermissions().contains("TICKET_MANAGER")));
         Integer filterUserId = isManager ? null : (caller != null ? caller.getUserId().intValue() : null);
-        return ticketService.getPage(cursor, size, search, status, templateId, labelIds, responsibleUserId, filterUserId);
+        // Company-scoped admins see only their company's tickets; super admins and no-company admins see all
+        Integer companyId = (caller != null && !caller.isSuperAdmin()) ? caller.getCompanyId() : null;
+        return ticketService.getPage(cursor, size, search, status, templateId, labelIds, responsibleUserId, filterUserId, companyId);
     }
 
     // ── GET BY ID ─────────────────────────────────────────────────────────────

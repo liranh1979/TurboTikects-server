@@ -32,8 +32,10 @@ public class UserManagementService {
         this.permissionService = permissionService;
     }
 
-    public List<UserListItemDto> getAllUsers() {
-        List<UserEntity> users = userRepository.findAll();
+    public List<UserListItemDto> getAllUsers(Integer callerCompanyId) {
+        List<UserEntity> users = callerCompanyId != null
+                ? userRepository.findByCompanyId(callerCompanyId)
+                : userRepository.findAll();
         List<Long> userIds = users.stream().map(UserEntity::getRed_id).toList();
         Map<Long, List<String>> permMap = permissionService.getPersonalPermissionsForUsers(userIds);
 
@@ -46,6 +48,7 @@ public class UserManagementService {
             dto.setSuperAdmin(u.isSuperAdmin());
             dto.setMetadata(u.getMetadata());
             dto.setPersonalPermissions(permMap.getOrDefault(u.getRed_id(), List.of()));
+            dto.setCompanyId(u.getCompanyId());
             return dto;
         }).toList();
     }
@@ -74,6 +77,7 @@ public class UserManagementService {
         result.setSuperAdmin(false);
         result.setMetadata(user.getMetadata());
         result.setPersonalPermissions(List.of());
+        result.setCompanyId(user.getCompanyId());
         return result;
     }
 
@@ -89,6 +93,9 @@ public class UserManagementService {
 
         if (dto.getEmail() != null)
             user.setEmail(dto.getEmail().isBlank() ? null : dto.getEmail().trim().toLowerCase());
+
+        if (dto.getCompanyId() != null)
+            user.setCompanyId(dto.getCompanyId() == -1 ? null : dto.getCompanyId());
 
         if (dto.getMetadata() != null) {
             Map<String, Object> merged = user.getMetadata() != null
@@ -111,6 +118,7 @@ public class UserManagementService {
         result.setSuperAdmin(user.isSuperAdmin());
         result.setMetadata(user.getMetadata());
         result.setPersonalPermissions(permissionService.getPersonalPermissions(id));
+        result.setCompanyId(user.getCompanyId());
         return result;
     }
 

@@ -45,12 +45,18 @@ public class LdapSyncService {
     }
 
     public String startSync(Long configId) {
+        return startSync(configId, null);
+    }
+
+    public String startSync(Long configId, Integer targetCompanyId) {
         String taskId = taskProgressService.createTask("LDAP Sync", 100);
-        new Thread(() -> runSync(configId, taskId)).start();
+        new Thread(() -> runSync(configId, taskId, targetCompanyId)).start();
         return taskId;
     }
 
-    public void runSync(Long configId, String taskId) {
+    public void runSync(Long configId, String taskId) { runSync(configId, taskId, null); }
+
+    public void runSync(Long configId, String taskId, Integer targetCompanyId) {
         try {
             LdapConfigEntity config = configRepository.findById(configId)
                     .orElseThrow(() -> new RuntimeException("LDAP config not found: " + configId));
@@ -65,7 +71,7 @@ public class LdapSyncService {
             LdapTemplate ldapTemplate = buildTemplate(config);
 
             taskProgressService.updateProgress(taskId, 15, "Syncing users…");
-            syncUsers(config, ldapTemplate, userMappings, taskId);
+            syncUsers(config, ldapTemplate, userMappings, taskId, targetCompanyId);
 
             if (config.getBaseDnGroups() != null && !config.getBaseDnGroups().isBlank()) {
                 taskProgressService.updateProgress(taskId, 65, "Syncing groups…");
@@ -85,7 +91,8 @@ public class LdapSyncService {
     // ── User sync ─────────────────────────────────────────────────────────────
 
     private void syncUsers(LdapConfigEntity config, LdapTemplate ldapTemplate,
-                           List<LdapFieldMappingEntity> mappings, String taskId) {
+                           List<LdapFieldMappingEntity> mappings, String taskId,
+                           Integer targetCompanyId) {
 
         List<Map<String, String>> ldapUsers = ldapTemplate.search(
                 LdapQueryBuilder.query().base(config.getBaseDnUsers()).filter(config.getUserFilter()),
@@ -106,7 +113,11 @@ public class LdapSyncService {
                 if (existing.isPresent()) {
                     updateUser(existing.get(), attrs, mappings);
                 } else {
-                    createLdapUser(attrs, mappings, dn);
+                    UserEntity created = createLdapUser(attrs, mappings, dn);
+                    if (targetCompanyId != null) {
+                        created.setCompanyId(targetCompanyId);
+                        userRepository.save(created);
+                    }
                 }
             } catch (Exception e) {
                 // Log and continue — one bad record should not abort the whole sync

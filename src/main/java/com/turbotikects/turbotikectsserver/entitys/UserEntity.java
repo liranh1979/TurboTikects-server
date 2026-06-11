@@ -45,4 +45,7 @@ public class UserEntity {
     @Column(name = "azure_external_id")
     private String azureExternalId;
 
+    @Column(name = "company_id")
+    private Integer companyId;
+
 }

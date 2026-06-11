@@ -19,4 +19,8 @@ public interface UserRepository extends JpaRepository<UserEntity, Long> {
     List<UserEntity> findBySourceType(int sourceType);
 
     Optional<UserEntity> findByEmail(String email);
+
+    List<UserEntity> findByCompanyId(Integer companyId);
+
+    long countByCompanyId(Integer companyId);
 }

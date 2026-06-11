@@ -54,12 +54,18 @@ public class AzureSyncService {
     }
 
     public String startSync(Long configId, boolean full) {
+        return startSync(configId, full, null);
+    }
+
+    public String startSync(Long configId, boolean full, Integer targetCompanyId) {
         String taskId = taskProgressService.createTask("Azure AD Sync", 100);
-        new Thread(() -> runSync(configId, taskId, full)).start();
+        new Thread(() -> runSync(configId, taskId, full, targetCompanyId)).start();
         return taskId;
     }
 
-    public void runSync(Long configId, String taskId, boolean full) {
+    public void runSync(Long configId, String taskId, boolean full) { runSync(configId, taskId, full, null); }
+
+    public void runSync(Long configId, String taskId, boolean full, Integer targetCompanyId) {
         try {
             AzureConfigEntity config = configRepository.findById(configId)
                     .orElseThrow(() -> new RuntimeException("Azure config not found: " + configId));
@@ -80,7 +86,7 @@ public class AzureSyncService {
             String token = azureService.getAccessToken(config);
 
             taskProgressService.updateProgress(taskId, 15, full ? "Full sync — syncing all users…" : "Syncing users (delta)…");
-            String newUserDeltaLink = syncUsers(config, token, userMappings, taskId);
+            String newUserDeltaLink = syncUsers(config, token, userMappings, taskId, targetCompanyId);
 
             taskProgressService.updateProgress(taskId, 65, full ? "Full sync — syncing all groups + members…" : "Syncing groups (delta)…");
             String newGroupDeltaLink = syncGroups(config, token, groupMappings, taskId);
@@ -98,7 +104,8 @@ public class AzureSyncService {
     // ── User sync ─────────────────────────────────────────────────────────────
 
     private String syncUsers(AzureConfigEntity config, String token,
-                             List<AzureFieldMappingEntity> mappings, String taskId) throws Exception {
+                             List<AzureFieldMappingEntity> mappings, String taskId,
+                             Integer targetCompanyId) throws Exception {
         String deltaLink = config.getUserDeltaLink();
         String nextUrl = (deltaLink != null && !deltaLink.isBlank())
                 ? deltaLink
@@ -150,7 +157,11 @@ public class AzureSyncService {
                         if (existing.isPresent()) {
                             updateUser(existing.get(), attrs, mappings);
                         } else {
-                            createAzureUser(attrs, mappings, azureId);
+                            UserEntity created = createAzureUser(attrs, mappings, azureId);
+                            if (targetCompanyId != null) {
+                                created.setCompanyId(targetCompanyId);
+                                userRepository.save(created);
+                            }
                         }
                     } catch (Exception ignored) {
                     }

@@ -138,6 +138,7 @@ public class UserService {
         dto.setSuperAdmin(user.isSuperAdmin());
         dto.setMetadata(user.getMetadata());
         dto.setEffectivePermissions(permissionService.computeEffectivePermissions(user.getRed_id()));
+        dto.setCompanyId(user.getCompanyId());
         return dto;
     }
 

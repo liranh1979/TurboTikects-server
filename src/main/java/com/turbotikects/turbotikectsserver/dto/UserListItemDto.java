@@ -18,4 +18,6 @@ public class UserListItemDto {
     private Map<String, Object> metadata;
     @JsonProperty("personal_permissions")
     private List<String> personalPermissions;
+    @JsonProperty("company_id")
+    private Integer companyId;
 }

@@ -2,9 +2,11 @@ package com.turbotikects.turbotikectsserver.controller;
 
 import com.turbotikects.turbotikectsserver.dto.CreateUserDto;
 import com.turbotikects.turbotikectsserver.dto.UpdateUserDto;
+import com.turbotikects.turbotikectsserver.dto.UserDto;
 import com.turbotikects.turbotikectsserver.dto.UserListItemDto;
 import com.turbotikects.turbotikectsserver.security.RequirePermission;
 import com.turbotikects.turbotikectsserver.services.UserManagementService;
+import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
 
@@ -23,8 +25,10 @@ public class UserManagementController {
     }
 
     @GetMapping
-    public List<UserListItemDto> getAllUsers() {
-        return userManagementService.getAllUsers();
+    public List<UserListItemDto> getAllUsers(HttpServletRequest request) {
+        UserDto caller = (UserDto) request.getAttribute("currentUser");
+        Integer companyId = (caller != null && !caller.isSuperAdmin()) ? caller.getCompanyId() : null;
+        return userManagementService.getAllUsers(companyId);
     }
 
     @PostMapping

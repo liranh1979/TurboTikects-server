@@ -27,4 +27,7 @@ public class UserDto {
 
     @JsonProperty("effective_permissions")
     private List<String> effectivePermissions;
+
+    @JsonProperty("company_id")
+    private Integer companyId;
 }
