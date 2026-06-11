@@ -25,7 +25,8 @@ public class CompanyController {
 
     @GetMapping
     public List<CompanyDto> getAll(HttpServletRequest req) {
-        requireSuperAdmin(req);
+        // Read is open to any authenticated user so company dropdowns work for all admins.
+        // Write operations below still require super admin.
         return companyService.getAll();
     }
 
