@@ -39,4 +39,9 @@ public interface TicketRepository extends JpaRepository<TicketEntity, Long> {
     @Transactional
     @Query("UPDATE TicketEntity t SET t.responsibleGroupId = :groupId, t.updatedAt = CURRENT_TIMESTAMP WHERE t.id IN :ids")
     void updateResponsibleGroupByIds(@Param("ids") List<Long> ids, @Param("groupId") Integer groupId);
+
+    @Modifying
+    @Transactional
+    @Query("UPDATE TicketEntity t SET t.companyId = :companyId WHERE t.requestUserId = :userId")
+    void updateCompanyForUser(@Param("userId") Integer userId, @Param("companyId") Integer companyId);
 }

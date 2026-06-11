@@ -35,8 +35,10 @@ public class GroupManagementController {
 
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
-    public GroupListItemDto createGroup(@RequestBody CreateGroupDto dto) {
-        return groupManagementService.createGroup(dto);
+    public GroupListItemDto createGroup(@RequestBody CreateGroupDto dto, HttpServletRequest request) {
+        UserDto caller = (UserDto) request.getAttribute("currentUser");
+        Integer callerCompanyId = (caller != null && !caller.isSuperAdmin()) ? caller.getCompanyId() : null;
+        return groupManagementService.createGroup(dto, callerCompanyId);
     }
 
     @PatchMapping("/{id}")

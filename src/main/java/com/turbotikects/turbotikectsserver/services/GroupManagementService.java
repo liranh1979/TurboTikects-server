@@ -64,13 +64,15 @@ public class GroupManagementService {
         }).toList();
     }
 
-    public GroupListItemDto createGroup(CreateGroupDto dto) {
+    public GroupListItemDto createGroup(CreateGroupDto dto, Integer callerCompanyId) {
         if (dto.getDisplayName() == null || dto.getDisplayName().isBlank())
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Display name is required");
 
         GroupEntity group = new GroupEntity();
         group.setDisplayName(dto.getDisplayName().trim());
         group.setMetadata(new HashMap<>());
+        if (callerCompanyId != null)
+            group.setCompanyId(callerCompanyId);
         groupRepository.save(group);
 
         return toDto(group, 0);

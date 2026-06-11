@@ -6,8 +6,10 @@ import com.turbotikects.turbotikectsserver.dto.UserListItemDto;
 import com.turbotikects.turbotikectsserver.entitys.FieldDefinitionsEntity;
 import com.turbotikects.turbotikectsserver.entitys.UserEntity;
 import com.turbotikects.turbotikectsserver.repositorys.FieldDefinitionsRepository;
+import com.turbotikects.turbotikectsserver.repositorys.TicketRepository;
 import com.turbotikects.turbotikectsserver.repositorys.UserRepository;
 import com.turbotikects.turbotikectsserver.utils.HashUtils;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
@@ -18,6 +20,7 @@ import java.util.*;
 public class UserManagementService {
 
     private final UserRepository userRepository;
+    @Autowired private TicketRepository ticketRepository;
     private final FieldDefinitionsRepository fieldDefinitionsRepository;
     private final TaskProgressService taskProgressService;
     private final PermissionService permissionService;
@@ -53,7 +56,7 @@ public class UserManagementService {
         }).toList();
     }
 
-    public UserListItemDto createUser(CreateUserDto dto) {
+    public UserListItemDto createUser(CreateUserDto dto, Integer callerCompanyId) {
         if (dto.getUsername() == null || dto.getUsername().isBlank())
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Username is required");
         if (dto.getPassword() == null || dto.getPassword().isBlank())
@@ -67,6 +70,8 @@ public class UserManagementService {
         user.setPassword(HashUtils.sha1(dto.getUsername().trim().toLowerCase() + "_" + dto.getPassword()));
         if (dto.getEmail() != null && !dto.getEmail().isBlank())
             user.setEmail(dto.getEmail().trim().toLowerCase());
+        if (callerCompanyId != null)
+            user.setCompanyId(callerCompanyId);
         userRepository.save(user);
 
         UserListItemDto result = new UserListItemDto();
@@ -94,8 +99,12 @@ public class UserManagementService {
         if (dto.getEmail() != null)
             user.setEmail(dto.getEmail().isBlank() ? null : dto.getEmail().trim().toLowerCase());
 
-        if (dto.getCompanyId() != null)
-            user.setCompanyId(dto.getCompanyId() == -1 ? null : dto.getCompanyId());
+        if (dto.getCompanyId() != null) {
+            Integer newCompanyId = dto.getCompanyId() == -1 ? null : dto.getCompanyId();
+            user.setCompanyId(newCompanyId);
+            // Retroactively stamp existing tickets opened by this user with the new company
+            ticketRepository.updateCompanyForUser(id.intValue(), newCompanyId);
+        }
 
         if (dto.getMetadata() != null) {
             Map<String, Object> merged = user.getMetadata() != null

@@ -33,8 +33,10 @@ public class UserManagementController {
 
     @PostMapping
     @ResponseStatus(HttpStatus.CREATED)
-    public UserListItemDto createUser(@RequestBody CreateUserDto dto) {
-        return userManagementService.createUser(dto);
+    public UserListItemDto createUser(@RequestBody CreateUserDto dto, HttpServletRequest request) {
+        UserDto caller = (UserDto) request.getAttribute("currentUser");
+        Integer callerCompanyId = (caller != null && !caller.isSuperAdmin()) ? caller.getCompanyId() : null;
+        return userManagementService.createUser(dto, callerCompanyId);
     }
 
     @PatchMapping("/{id}")
