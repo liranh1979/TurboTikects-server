@@ -77,6 +77,13 @@ public class CompanyController {
         companyService.saveGlobalHours(dto);
     }
 
+    @PostMapping("/sync-tickets")
+    public Map<String, Integer> syncTickets(HttpServletRequest req) {
+        requireSuperAdmin(req);
+        int updated = companyService.syncAllTickets();
+        return Map.of("users_processed", updated);
+    }
+
     @PostMapping("/hours/parse-ai")
     public List<DayScheduleDto> parseAi(@RequestBody Map<String, String> body,
                                         HttpServletRequest req) {

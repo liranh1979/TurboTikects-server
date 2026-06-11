@@ -11,13 +11,40 @@ import java.util.List;
 
 public interface TicketRepository extends JpaRepository<TicketEntity, Long> {
 
-    @Query("SELECT t FROM TicketEntity t WHERE (:cursor IS NULL OR t.id < :cursor) AND (:status IS NULL OR t.status = :status) AND (:templateId IS NULL OR t.templateId = :templateId) AND (:responsibleUserId IS NULL OR t.responsibleUserId = :responsibleUserId) AND (:filterUserId IS NULL OR t.requestUserId = :filterUserId) AND (:companyId IS NULL OR t.companyId = :companyId) ORDER BY t.id DESC LIMIT :size")
+    // JOIN with users so company filter works even if ticket.company_id is NULL
+    // (e.g. ticket created before the user was assigned to a company)
+    @Query(value = """
+            SELECT t.* FROM tickets t
+            LEFT JOIN users u ON u.red_id = t.request_user_id
+            WHERE (:cursor IS NULL OR t.id < :cursor)
+              AND (:status IS NULL OR t.status = :status)
+              AND (:templateId IS NULL OR t.template_id = :templateId)
+              AND (:responsibleUserId IS NULL OR t.responsible_user_id = :responsibleUserId)
+              AND (:filterUserId IS NULL OR t.request_user_id = :filterUserId)
+              AND (:companyId IS NULL OR t.company_id = :companyId OR u.company_id = :companyId)
+            ORDER BY t.id DESC LIMIT :size
+            """, nativeQuery = true)
     List<TicketEntity> findPage(@Param("cursor") Long cursor, @Param("size") int size, @Param("status") String status, @Param("templateId") Long templateId, @Param("responsibleUserId") Integer responsibleUserId, @Param("filterUserId") Integer filterUserId, @Param("companyId") Integer companyId);
 
-    @Query(value = "SELECT * FROM tickets WHERE MATCH(title, description) AGAINST (:q IN BOOLEAN MODE) AND (:cursor IS NULL OR id < :cursor) AND (:companyId IS NULL OR company_id = :companyId) ORDER BY id DESC LIMIT :size", nativeQuery = true)
+    @Query(value = """
+            SELECT t.* FROM tickets t
+            LEFT JOIN users u ON u.red_id = t.request_user_id
+            WHERE MATCH(t.title, t.description) AGAINST (:q IN BOOLEAN MODE)
+              AND (:cursor IS NULL OR t.id < :cursor)
+              AND (:companyId IS NULL OR t.company_id = :companyId OR u.company_id = :companyId)
+            ORDER BY t.id DESC LIMIT :size
+            """, nativeQuery = true)
     List<TicketEntity> searchPage(@Param("q") String q, @Param("cursor") Long cursor, @Param("size") int size, @Param("companyId") Integer companyId);
 
-    @Query(value = "SELECT * FROM tickets WHERE MATCH(title, description) AGAINST (:q IN BOOLEAN MODE) AND (:cursor IS NULL OR id < :cursor) AND request_user_id = :filterUserId AND (:companyId IS NULL OR company_id = :companyId) ORDER BY id DESC LIMIT :size", nativeQuery = true)
+    @Query(value = """
+            SELECT t.* FROM tickets t
+            LEFT JOIN users u ON u.red_id = t.request_user_id
+            WHERE MATCH(t.title, t.description) AGAINST (:q IN BOOLEAN MODE)
+              AND (:cursor IS NULL OR t.id < :cursor)
+              AND t.request_user_id = :filterUserId
+              AND (:companyId IS NULL OR t.company_id = :companyId OR u.company_id = :companyId)
+            ORDER BY t.id DESC LIMIT :size
+            """, nativeQuery = true)
     List<TicketEntity> searchPageByUser(@Param("q") String q, @Param("cursor") Long cursor, @Param("size") int size, @Param("filterUserId") Integer filterUserId, @Param("companyId") Integer companyId);
 
     @Modifying

@@ -10,6 +10,7 @@ import com.turbotikects.turbotikectsserver.entitys.HoursOfOperationEntity;
 import com.turbotikects.turbotikectsserver.repositorys.CompanyRepository;
 import com.turbotikects.turbotikectsserver.repositorys.GroupRepository;
 import com.turbotikects.turbotikectsserver.repositorys.HoursOfOperationRepository;
+import com.turbotikects.turbotikectsserver.repositorys.TicketRepository;
 import com.turbotikects.turbotikectsserver.repositorys.UserRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
@@ -24,11 +25,12 @@ import java.util.stream.Collectors;
 @Service
 public class CompanyService {
 
-    @Autowired private CompanyRepository       companyRepo;
+    @Autowired private CompanyRepository          companyRepo;
     @Autowired private HoursOfOperationRepository hooRepo;
-    @Autowired private UserRepository          userRepo;
-    @Autowired private GroupRepository         groupRepo;
-    @Autowired private AiSettingsService       aiSettingsService;
+    @Autowired private UserRepository             userRepo;
+    @Autowired private GroupRepository            groupRepo;
+    @Autowired private TicketRepository           ticketRepo;
+    @Autowired private AiSettingsService          aiSettingsService;
 
     // ── COMPANY CRUD ──────────────────────────────────────────────────────────
 
@@ -138,6 +140,21 @@ public class CompanyService {
         dto.setDays(days);
         dto.setTimezone(timezone);
         return dto;
+    }
+
+    // ── SYNC ALL TICKET COMPANY IDs ───────────────────────────────────────────
+
+    public int syncAllTickets() {
+        // For every user that has a company assigned, stamp all their tickets with that company.
+        // This fixes tickets created before the user was assigned to a company.
+        int updated = 0;
+        for (var user : userRepo.findAll()) {
+            if (user.getCompanyId() != null) {
+                ticketRepo.updateCompanyForUser(user.getRed_id().intValue(), user.getCompanyId());
+                updated++;
+            }
+        }
+        return updated;
     }
 
     // ── AI PARSE ─────────────────────────────────────────────────────────────
