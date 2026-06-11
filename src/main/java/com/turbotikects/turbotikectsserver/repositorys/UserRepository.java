@@ -2,6 +2,8 @@ package com.turbotikects.turbotikectsserver.repositorys;
 
 import com.turbotikects.turbotikectsserver.entitys.UserEntity;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 
 import java.util.List;
 import java.util.Optional;
@@ -20,7 +22,10 @@ public interface UserRepository extends JpaRepository<UserEntity, Long> {
 
     Optional<UserEntity> findByEmail(String email);
 
-    List<UserEntity> findByCompanyId(Integer companyId);
+    // Native SQL to bypass any Hibernate JPQL cache issue with newly-added column
+    @Query(value = "SELECT * FROM users WHERE company_id = :companyId", nativeQuery = true)
+    List<UserEntity> findByCompanyId(@Param("companyId") Integer companyId);
 
-    long countByCompanyId(Integer companyId);
+    @Query(value = "SELECT COUNT(*) FROM users WHERE company_id = :companyId", nativeQuery = true)
+    long countByCompanyId(@Param("companyId") Integer companyId);
 }
