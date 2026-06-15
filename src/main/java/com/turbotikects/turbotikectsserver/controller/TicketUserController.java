@@ -1,11 +1,13 @@
 package com.turbotikects.turbotikectsserver.controller;
 
+import com.turbotikects.turbotikectsserver.dto.UserDto;
 import com.turbotikects.turbotikectsserver.dto.UserSelectItemDto;
 import com.turbotikects.turbotikectsserver.entitys.GroupMemberEntity;
 import com.turbotikects.turbotikectsserver.entitys.GroupPermissionEntity;
 import com.turbotikects.turbotikectsserver.entitys.PermissionEntity;
 import com.turbotikects.turbotikectsserver.entitys.UserEntity;
 import com.turbotikects.turbotikectsserver.repositorys.*;
+import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -39,10 +41,14 @@ public class TicketUserController {
         this.groupMemberRepo = groupMemberRepo;
     }
 
-    /** All users — for request_user picker */
+    /** All users (in caller's company, if scoped) — for request_user picker */
     @GetMapping("/assignable")
-    public List<UserSelectItemDto> getAssignable() {
-        return userRepo.findAll().stream()
+    public List<UserSelectItemDto> getAssignable(HttpServletRequest request) {
+        Integer companyId = callerCompanyId(request);
+        List<UserEntity> users = companyId != null
+                ? userRepo.findByCompanyId(companyId)
+                : userRepo.findByIsDeletedFalse();
+        return users.stream()
                 .map(this::toDto)
                 .sorted(Comparator.comparing(UserSelectItemDto::getDisplayName,
                         String.CASE_INSENSITIVE_ORDER))
@@ -51,11 +57,12 @@ public class TicketUserController {
 
     /** Super admins + users with effective TICKET_MANAGER permission — for responsible picker */
     @GetMapping("/managers")
-    public List<UserSelectItemDto> getManagers() {
+    public List<UserSelectItemDto> getManagers(HttpServletRequest request) {
+        Integer companyId = callerCompanyId(request);
         Set<Long> managerIds = new HashSet<>();
 
         // Super admins always qualify
-        userRepo.findAll().stream()
+        userRepo.findByIsDeletedFalse().stream()
                 .filter(UserEntity::isSuperAdmin)
                 .map(UserEntity::getRed_id)
                 .forEach(managerIds::add);
@@ -80,10 +87,18 @@ public class TicketUserController {
         });
 
         return userRepo.findAllById(new ArrayList<>(managerIds)).stream()
+                .filter(u -> !u.isDeleted())
+                .filter(u -> companyId == null
+                        || (u.getCompanyId() != null && u.getCompanyId().equals(companyId)))
                 .map(this::toDto)
                 .sorted(Comparator.comparing(UserSelectItemDto::getDisplayName,
                         String.CASE_INSENSITIVE_ORDER))
                 .collect(Collectors.toList());
+    }
+
+    private Integer callerCompanyId(HttpServletRequest request) {
+        UserDto caller = (UserDto) request.getAttribute("currentUser");
+        return (caller != null && !caller.isSuperAdmin()) ? caller.getCompanyId() : null;
     }
 
     private UserSelectItemDto toDto(UserEntity u) {

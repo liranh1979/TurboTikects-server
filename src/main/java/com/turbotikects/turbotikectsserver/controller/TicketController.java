@@ -77,7 +77,8 @@ public class TicketController {
         boolean isManager = caller != null && (caller.isSuperAdmin()
                 || (caller.getEffectivePermissions() != null
                     && caller.getEffectivePermissions().contains("TICKET_MANAGER")));
-        return ticketService.getById(id, caller != null ? caller.getUserId().intValue() : null, isManager);
+        return ticketService.getById(id, caller != null ? caller.getUserId().intValue() : null, isManager,
+                caller != null && caller.isSuperAdmin(), caller != null ? caller.getCompanyId() : null);
     }
 
     // ── CREATE ────────────────────────────────────────────────────────────────

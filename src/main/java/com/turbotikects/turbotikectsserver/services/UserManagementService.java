@@ -38,7 +38,7 @@ public class UserManagementService {
     public List<UserListItemDto> getAllUsers(Integer callerCompanyId) {
         List<UserEntity> users = callerCompanyId != null
                 ? userRepository.findByCompanyId(callerCompanyId)
-                : userRepository.findAll();
+                : userRepository.findByIsDeletedFalse();
         List<Long> userIds = users.stream().map(UserEntity::getRed_id).toList();
         Map<Long, List<String>> permMap = permissionService.getPersonalPermissionsForUsers(userIds);
 
@@ -62,17 +62,29 @@ public class UserManagementService {
         if (dto.getPassword() == null || dto.getPassword().isBlank())
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Password is required");
 
-        UserEntity user = new UserEntity();
-        user.setUsername(dto.getUsername().trim().toLowerCase());
+        String username = dto.getUsername().trim().toLowerCase();
+
+        // Reactivate a soft-deleted user with the same username instead of inserting a new row
+        // (the user_name column has a UNIQUE constraint).
+        UserEntity user = userRepository.findByUsername(username)
+                .filter(UserEntity::isDeleted)
+                .orElseGet(UserEntity::new);
+        boolean reactivating = user.getRed_id() != null;
+
+        user.setUsername(username);
         user.setDisplayName(dto.getDisplayName() != null ? dto.getDisplayName().trim() : dto.getUsername());
         user.setSuperAdmin(false);
         user.setMetadata(new HashMap<>());
-        user.setPassword(HashUtils.sha1(dto.getUsername().trim().toLowerCase() + "_" + dto.getPassword()));
-        if (dto.getEmail() != null && !dto.getEmail().isBlank())
-            user.setEmail(dto.getEmail().trim().toLowerCase());
-        if (callerCompanyId != null)
-            user.setCompanyId(callerCompanyId);
+        user.setPassword(HashUtils.sha1(username + "_" + dto.getPassword()));
+        user.setEmail((dto.getEmail() != null && !dto.getEmail().isBlank()) ? dto.getEmail().trim().toLowerCase() : null);
+        user.setCompanyId(callerCompanyId);
+        user.setDeleted(false);
         userRepository.save(user);
+
+        if (reactivating) {
+            // Drop stale personal permissions from the previous account
+            permissionService.setUserPermissions(user.getRed_id(), List.of());
+        }
 
         UserListItemDto result = new UserListItemDto();
         result.setId(user.getRed_id());
@@ -136,11 +148,16 @@ public class UserManagementService {
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "User not found"));
         if (user.isSuperAdmin())
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Super admin users cannot be deleted");
-        userRepository.delete(user);
+        // Soft delete: tickets reference users via fk_ticket_request_user, so a hard delete
+        // would fail for any user that has ever created a ticket. Flag the row instead so it
+        // disappears from all user lists/pickers; a re-created account with the same
+        // user_name reactivates this row (see createUser).
+        user.setDeleted(true);
+        userRepository.save(user);
     }
 
     public String startSyncMetadata() {
-        List<UserEntity> users = userRepository.findAll();
+        List<UserEntity> users = userRepository.findByIsDeletedFalse();
         List<FieldDefinitionsEntity> fields = fieldDefinitionsRepository
                 .findByEntityTypeAndIsSystemFalseOrderByDisplayOrder("user");
 

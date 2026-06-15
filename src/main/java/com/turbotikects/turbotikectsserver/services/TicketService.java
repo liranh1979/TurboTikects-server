@@ -138,13 +138,29 @@ public class TicketService {
         return toDetailDto(ticket);
     }
 
-    public TicketDetailDto getById(Long id, Integer callerId, boolean isManager) {
+    public TicketDetailDto getById(Long id, Integer callerId, boolean isManager,
+                                    boolean isSuperAdmin, Integer callerCompanyId) {
         TicketEntity ticket = ticketRepo.findById(id)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
-        if (!isManager && (callerId == null || !callerId.equals(ticket.getRequestUserId()))) {
+
+        boolean isRequester = callerId != null && callerId.equals(ticket.getRequestUserId());
+
+        if (isSuperAdmin || isRequester) {
+            return toDetailDto(ticket);
+        }
+
+        if (ticket.getCompanyId() != null) {
+            // Company-scoped ticket: only managers belonging to the same company may view
+            if (isManager && callerCompanyId != null && callerCompanyId.equals(ticket.getCompanyId())) {
+                return toDetailDto(ticket);
+            }
             throw new ResponseStatusException(HttpStatus.FORBIDDEN);
         }
-        return toDetailDto(ticket);
+
+        if (isManager) {
+            return toDetailDto(ticket);
+        }
+        throw new ResponseStatusException(HttpStatus.FORBIDDEN);
     }
 
     // ── CREATE ────────────────────────────────────────────────────────────────

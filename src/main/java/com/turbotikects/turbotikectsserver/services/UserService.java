@@ -72,6 +72,8 @@ public class UserService {
         if (found.isEmpty()) found = userRepository.findByUsername(username);
         if (found.isPresent()) {
             UserEntity user = found.get();
+            if (user.isDeleted())
+                throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Invalid credentials");
             if (user.getSourceType() == 1) {
                 // LDAP-provisioned user: authenticate via bind with stored DN
                 boolean ok = ldapConfigRepository.findByIsActiveTrue().stream()

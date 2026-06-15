@@ -21,6 +21,7 @@ public class TicketLabelController {
     }
 
     @GetMapping
+    @RequirePermission("AUTHENTICATED")
     public List<TicketLabelDto> getAll() {
         return service.getAll();
     }

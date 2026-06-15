@@ -23,6 +23,7 @@ public class FieldDefinitionsController {
     }
 
     @GetMapping
+    @RequirePermission("AUTHENTICATED")
     public List<FieldDefinitionsEntity> getCustomFields(
             @RequestParam(defaultValue = "user") String entityType) {
         return fieldDefinitionsService.getCustomFields(entityType);
@@ -34,6 +35,7 @@ public class FieldDefinitionsController {
     }
 
     @GetMapping("/translations/{lang}")
+    @RequirePermission("AUTHENTICATED")
     public Map<String, String> getFieldTranslations(
             @PathVariable String lang,
             @RequestParam(defaultValue = "user_fields") String translationType) {

@@ -48,4 +48,7 @@ public class UserEntity {
     @Column(name = "company_id")
     private Integer companyId;
 
+    @Column(name = "is_deleted", nullable = false)
+    private boolean isDeleted;
+
 }

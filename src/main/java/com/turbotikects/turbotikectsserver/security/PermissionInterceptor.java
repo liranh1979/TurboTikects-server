@@ -33,6 +33,8 @@ public class PermissionInterceptor implements HandlerInterceptor {
 
         if (user.isSuperAdmin()) return true;
 
+        if (Arrays.asList(annotation.value()).contains("AUTHENTICATED")) return true;
+
         List<String> effective = user.getEffectivePermissions();
         if (effective == null) effective = List.of();
 

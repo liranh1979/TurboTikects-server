@@ -15,7 +15,10 @@ public interface TicketLabelAssignmentRepository extends JpaRepository<TicketLab
 
     List<TicketLabelAssignmentEntity> findByTicketId(Long ticketId);
 
-    void deleteByTicketId(Long ticketId);
+    @Modifying
+    @Transactional
+    @Query("DELETE FROM TicketLabelAssignmentEntity a WHERE a.ticketId = :ticketId")
+    void deleteByTicketId(@Param("ticketId") Long ticketId);
 
     @Modifying
     @Transactional

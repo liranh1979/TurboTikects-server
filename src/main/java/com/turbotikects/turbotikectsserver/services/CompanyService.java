@@ -148,7 +148,7 @@ public class CompanyService {
         // For every user that has a company assigned, stamp all their tickets with that company.
         // This fixes tickets created before the user was assigned to a company.
         int updated = 0;
-        for (var user : userRepo.findAll()) {
+        for (var user : userRepo.findByIsDeletedFalse()) {
             if (user.getCompanyId() != null) {
                 ticketRepo.updateCompanyForUser(user.getRed_id().intValue(), user.getCompanyId());
                 updated++;

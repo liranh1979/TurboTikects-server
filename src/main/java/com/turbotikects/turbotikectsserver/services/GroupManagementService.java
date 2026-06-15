@@ -117,7 +117,9 @@ public class GroupManagementService {
         List<Long> userIds = groupMemberRepository.findByGroupId(groupId)
                 .stream().map(GroupMemberEntity::getUserId).toList();
 
-        return userRepository.findAllById(userIds).stream().map(u -> {
+        return userRepository.findAllById(userIds).stream()
+                .filter(u -> !u.isDeleted())
+                .map(u -> {
             GroupMemberDto dto = new GroupMemberDto();
             dto.setUserId(u.getRed_id());
             dto.setUsername(u.getUsername());

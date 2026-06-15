@@ -23,9 +23,11 @@ public interface UserRepository extends JpaRepository<UserEntity, Long> {
     Optional<UserEntity> findByEmail(String email);
 
     // Native SQL to bypass any Hibernate JPQL cache issue with newly-added column
-    @Query(value = "SELECT * FROM users WHERE company_id = :companyId", nativeQuery = true)
+    @Query(value = "SELECT * FROM users WHERE company_id = :companyId AND is_deleted = 0", nativeQuery = true)
     List<UserEntity> findByCompanyId(@Param("companyId") Integer companyId);
 
-    @Query(value = "SELECT COUNT(*) FROM users WHERE company_id = :companyId", nativeQuery = true)
+    @Query(value = "SELECT COUNT(*) FROM users WHERE company_id = :companyId AND is_deleted = 0", nativeQuery = true)
     long countByCompanyId(@Param("companyId") Integer companyId);
+
+    List<UserEntity> findByIsDeletedFalse();
 }

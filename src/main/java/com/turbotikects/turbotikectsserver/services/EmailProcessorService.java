@@ -152,6 +152,9 @@ public class EmailProcessorService {
         ticket.setTemplateId(template.getId());
         ticket.setTemplateVersionId(version.getId());
         ticket.setRequestUserId(requestUser.getRed_id().intValue());
+        if (requestUser.getCompanyId() != null) {
+            ticket.setCompanyId(requestUser.getCompanyId());
+        }
         ticket.setVersion(1);
         ticket.setSourceType("email");
         ticket = ticketRepo.save(ticket);

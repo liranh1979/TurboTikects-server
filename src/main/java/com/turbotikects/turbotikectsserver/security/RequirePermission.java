@@ -8,5 +8,5 @@ import java.lang.annotation.Target;
 @Target({ElementType.METHOD, ElementType.TYPE})
 @Retention(RetentionPolicy.RUNTIME)
 public @interface RequirePermission {
-    String[] value(); // OR semantics — any one permission suffices
+    String[] value(); // OR semantics — any one permission suffices; "AUTHENTICATED" allows any logged-in user
 }
