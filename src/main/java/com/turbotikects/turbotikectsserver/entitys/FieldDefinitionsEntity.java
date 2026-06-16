@@ -47,6 +47,9 @@ public class FieldDefinitionsEntity {
     @Column(name = "is_admin_only")
     private boolean isAdminOnly;
 
+    @Column(name = "field_visibility", nullable = false)
+    private String fieldVisibility = "all";
+
     @JdbcTypeCode(SqlTypes.JSON)
     @Column(name = "field_options", columnDefinition = "json")
     private List<String> fieldOptions;

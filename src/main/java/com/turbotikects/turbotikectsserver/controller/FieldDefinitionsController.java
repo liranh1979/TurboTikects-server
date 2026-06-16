@@ -62,6 +62,11 @@ public class FieldDefinitionsController {
         fieldDefinitionsService.setAdminOnly(id, adminOnly);
     }
 
+    @PatchMapping("/{id}/visibility")
+    public void setFieldVisibility(@PathVariable Long id, @RequestParam String visibility) {
+        fieldDefinitionsService.setFieldVisibility(id, visibility);
+    }
+
     @PatchMapping("/{id}/config")
     public void updateFieldConfig(@PathVariable Long id, @RequestBody java.util.Map<String, Object> config) {
         fieldDefinitionsService.updateFieldConfig(id, config);

@@ -47,6 +47,14 @@ public class FieldDefinitionsService {
         });
     }
 
+    public void setFieldVisibility(Long id, String visibility) {
+        fieldDefinitionsRepository.findById(id).ifPresent(f -> {
+            f.setFieldVisibility(visibility);
+            f.setAdminOnly("admin_only".equals(visibility));
+            fieldDefinitionsRepository.save(f);
+        });
+    }
+
     public Map<String, String> getFieldTranslations(String langCode, String translationType) {
         Map<String, String> result = new HashMap<>();
         Optional<List<DynamicTranslationsEntity>> entries =
