@@ -7,6 +7,7 @@ import com.turbotikects.turbotikectsserver.entitys.AttachmentEntity;
 import com.turbotikects.turbotikectsserver.entitys.AttachmentFileEntity;
 import com.turbotikects.turbotikectsserver.services.AttachmentService;
 import com.turbotikects.turbotikectsserver.services.FileStorageService;
+import com.turbotikects.turbotikectsserver.services.TicketService;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.core.io.ByteArrayResource;
 import org.springframework.http.HttpHeaders;
@@ -19,6 +20,7 @@ import org.springframework.web.server.ResponseStatusException;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.stream.Collectors;
 
 @RestController
 @RequestMapping("/api/v1/attachments")
@@ -26,10 +28,13 @@ public class AttachmentController {
 
     private final AttachmentService attachmentService;
     private final FileStorageService fileStorage;
+    private final TicketService ticketService;
 
-    public AttachmentController(AttachmentService attachmentService, FileStorageService fileStorage) {
+    public AttachmentController(AttachmentService attachmentService, FileStorageService fileStorage,
+                                TicketService ticketService) {
         this.attachmentService = attachmentService;
         this.fileStorage = fileStorage;
+        this.ticketService = ticketService;
     }
 
     @GetMapping
@@ -43,7 +48,14 @@ public class AttachmentController {
                                       @RequestParam("files") MultipartFile[] files,
                                       HttpServletRequest request) throws IOException {
         Integer uploadedBy = currentUserId(request);
-        return attachmentService.upload(entityType, entityId, files, uploadedBy);
+        List<AttachmentDto> result = attachmentService.upload(entityType, entityId, files, uploadedBy);
+        if ("ticket".equals(entityType) && !result.isEmpty()) {
+            List<String> filenames = result.stream()
+                    .map(AttachmentDto::getOriginalFilename)
+                    .collect(Collectors.toList());
+            ticketService.logAttachmentActivity(entityId, uploadedBy, filenames);
+        }
+        return result;
     }
 
     @DeleteMapping

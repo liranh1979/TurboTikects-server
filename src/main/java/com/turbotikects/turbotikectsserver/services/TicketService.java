@@ -245,6 +245,15 @@ public class TicketService {
         final Integer previousResponsibleUserId  = ticket.getResponsibleUserId();
         final Integer previousResponsibleGroupId = ticket.getResponsibleGroupId();
 
+        if (dto.getRequestUserId() != null && !dto.getRequestUserId().equals(ticket.getRequestUserId())) {
+            changes.put("requestUserId",
+                    Map.of("from", nullSafe(ticket.getRequestUserId()), "to", dto.getRequestUserId()));
+            ticket.setRequestUserId(dto.getRequestUserId());
+            // Update company to track the new request user's company
+            Integer newCompany = userRepo.findById(dto.getRequestUserId().longValue())
+                    .map(u -> u.getCompanyId()).orElse(null);
+            ticket.setCompanyId(newCompany);
+        }
         if (dto.getTitle() != null && !dto.getTitle().equals(ticket.getTitle())) {
             changes.put("title", Map.of("from", ticket.getTitle(), "to", dto.getTitle()));
             ticket.setTitle(dto.getTitle());
@@ -293,7 +302,7 @@ public class TicketService {
 
         // Activity log
         if (!changes.isEmpty()) {
-            writeActivityLog(ticket.getId(), actorId, "FIELD_UPDATE", changes);
+            writeActivityLog(ticket.getId(), actorId, "FIELD_UPDATE", "field_change", changes);
         }
 
         // Publish SSE
@@ -476,6 +485,20 @@ public class TicketService {
         logEntry.setActivityType(activityType);
         logEntry.setChanges(changes);
         activityRepo.save(logEntry);
+    }
+
+    // ── FILE ATTACHMENT ───────────────────────────────────────────────────────
+
+    public void logAttachmentActivity(Long ticketId, Integer actorId, List<String> filenames) {
+        if (!ticketRepo.existsById(ticketId)) return;
+        writeActivityLog(ticketId, actorId != null ? actorId : 1, "FILE_ATTACHED", "file_attached",
+                Map.of("filenames", filenames));
+        TicketSseEventDto event = new TicketSseEventDto();
+        event.setType("TICKET_UPDATED");
+        event.setTicketId(ticketId);
+        event.setUserId(actorId);
+        event.setOperation("FILE_ATTACHED");
+        sseService.publish(event);
     }
 
     // ── AI SOLUTION ───────────────────────────────────────────────────────────
