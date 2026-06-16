@@ -65,6 +65,7 @@ public class FieldDefinitionsService {
         field.setFieldKey(dto.getFieldKey());
         field.setFieldType(dto.getFieldType());
         field.setFieldOptions(dto.getFieldOptions());
+        if (dto.getFieldConfig() != null) field.setFieldConfig(dto.getFieldConfig());
         field.setListVisible(false);
         field.setDetailVisible(true);
         field.setSystem(false);
@@ -88,6 +89,13 @@ public class FieldDefinitionsService {
     public void updateFieldOptions(Long id, List<String> options) {
         fieldDefinitionsRepository.findById(id).ifPresent(f -> {
             f.setFieldOptions(options);
+            fieldDefinitionsRepository.save(f);
+        });
+    }
+
+    public void updateFieldConfig(Long id, Map<String, Object> config) {
+        fieldDefinitionsRepository.findById(id).ifPresent(f -> {
+            f.setFieldConfig(config);
             fieldDefinitionsRepository.save(f);
         });
     }

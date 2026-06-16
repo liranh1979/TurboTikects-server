@@ -11,6 +11,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -26,6 +27,9 @@ public class TicketService {
     private final TicketPresenceRepository presenceRepo;
     private final UserRepository userRepo;
     private final TicketSseService sseService;
+    private final FieldDefinitionsRepository fieldDefRepo;
+    private final HoursOfOperationRepository hooRepo;
+    private final TimerCalculationService timerCalc;
 
     public TicketService(TicketRepository ticketRepo,
                          TicketLabelAssignmentRepository labelAssignmentRepo,
@@ -34,7 +38,10 @@ public class TicketService {
                          TicketActivityLogRepository activityRepo,
                          TicketPresenceRepository presenceRepo,
                          UserRepository userRepo,
-                         TicketSseService sseService) {
+                         TicketSseService sseService,
+                         FieldDefinitionsRepository fieldDefRepo,
+                         HoursOfOperationRepository hooRepo,
+                         TimerCalculationService timerCalc) {
         this.ticketRepo = ticketRepo;
         this.labelAssignmentRepo = labelAssignmentRepo;
         this.labelRepo = labelRepo;
@@ -43,6 +50,9 @@ public class TicketService {
         this.presenceRepo = presenceRepo;
         this.userRepo = userRepo;
         this.sseService = sseService;
+        this.fieldDefRepo = fieldDefRepo;
+        this.hooRepo = hooRepo;
+        this.timerCalc = timerCalc;
     }
 
     // ── LIST / SEARCH ─────────────────────────────────────────────────────────
@@ -125,6 +135,7 @@ public class TicketService {
             dto.setCreatedAt(t.getCreatedAt());
             dto.setUpdatedAt(t.getUpdatedAt());
             dto.setLabels(labelDtos);
+            dto.setTicketData(t.getTicketData());
             result.add(dto);
         }
         return result;
@@ -181,7 +192,7 @@ public class TicketService {
         if (reqUserCompany != null) ticket.setCompanyId(reqUserCompany);
         ticket.setResponsibleUserId(dto.getResponsibleUserId());
         ticket.setResponsibleGroupId(dto.getResponsibleGroupId());
-        ticket.setTicketData(dto.getTicketData());
+        ticket.setTicketData(processTimerFields(dto.getTicketData(), reqUserCompany));
         ticket.setVersion(1);
         ticket = ticketRepo.save(ticket);
 
@@ -260,7 +271,8 @@ public class TicketService {
         }
         if (dto.getTicketData() != null) {
             changes.put("ticketData", Map.of("updated", true));
-            ticket.setTicketData(dto.getTicketData());
+            Integer companyId = ticket.getCompanyId();
+            ticket.setTicketData(processTimerFields(dto.getTicketData(), companyId));
         }
 
         ticket.setVersion(ticket.getVersion() + 1);
@@ -535,6 +547,59 @@ public class TicketService {
     private String escapeHtml(String s) {
         if (s == null) return "";
         return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
+    }
+
+    /**
+     * For any timer field present in ticketData that has duration_value + duration_unit set
+     * (and no target_datetime yet, or it changed), calculates and stamps started_at + target_datetime
+     * using the company's Hours of Operation (or global if no company).
+     */
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> processTimerFields(Map<String, Object> ticketData, Integer companyId) {
+        if (ticketData == null) return null;
+
+        // Load all timer field definitions
+        List<FieldDefinitionsEntity> timerFields = fieldDefRepo
+                .findByEntityTypeOrderByDisplayOrder("ticket")
+                .stream()
+                .filter(f -> "timer".equals(f.getFieldType()))
+                .toList();
+
+        if (timerFields.isEmpty()) return ticketData;
+
+        // Load HoO schedule once
+        List<HoursOfOperationEntity> schedule = companyId != null
+                ? hooRepo.findByCompanyId(companyId)
+                : hooRepo.findByCompanyIdIsNull();
+        if (schedule.isEmpty()) schedule = hooRepo.findByCompanyIdIsNull();
+
+        Map<String, Object> result = new LinkedHashMap<>(ticketData);
+
+        for (FieldDefinitionsEntity field : timerFields) {
+            Object raw = result.get(field.getFieldKey());
+            if (!(raw instanceof Map)) continue;
+
+            Map<String, Object> timerVal = new LinkedHashMap<>((Map<String, Object>) raw);
+            Object durationValueRaw = timerVal.get("duration_value");
+            Object durationUnitRaw  = timerVal.get("duration_unit");
+
+            if (durationValueRaw == null || durationUnitRaw == null) continue;
+
+            double durationValue;
+            try { durationValue = Double.parseDouble(durationValueRaw.toString()); }
+            catch (NumberFormatException e) { continue; }
+
+            String durationUnit = durationUnitRaw.toString();
+            LocalDateTime startedAt = LocalDateTime.now();
+
+            LocalDateTime target = timerCalc.calculateTarget(startedAt, durationValue, durationUnit, schedule);
+
+            timerVal.put("started_at", startedAt.format(DateTimeFormatter.ISO_LOCAL_DATE_TIME));
+            timerVal.put("target_datetime", target.format(DateTimeFormatter.ISO_LOCAL_DATE_TIME));
+            result.put(field.getFieldKey(), timerVal);
+        }
+
+        return result;
     }
 
     private TicketDetailDto toDetailDto(TicketEntity ticket) {

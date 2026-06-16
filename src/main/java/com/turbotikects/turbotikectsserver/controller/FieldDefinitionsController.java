@@ -61,4 +61,9 @@ public class FieldDefinitionsController {
     public void setAdminOnly(@PathVariable Long id, @RequestParam boolean adminOnly) {
         fieldDefinitionsService.setAdminOnly(id, adminOnly);
     }
+
+    @PatchMapping("/{id}/config")
+    public void updateFieldConfig(@PathVariable Long id, @RequestBody java.util.Map<String, Object> config) {
+        fieldDefinitionsService.updateFieldConfig(id, config);
+    }
 }

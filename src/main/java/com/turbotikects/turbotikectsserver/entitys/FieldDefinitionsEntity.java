@@ -8,6 +8,7 @@ import org.hibernate.type.SqlTypes;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 
 @Entity
 @Table(name = "field_definitions")
@@ -49,6 +50,10 @@ public class FieldDefinitionsEntity {
     @JdbcTypeCode(SqlTypes.JSON)
     @Column(name = "field_options", columnDefinition = "json")
     private List<String> fieldOptions;
+
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "field_config", columnDefinition = "json")
+    private Map<String, Object> fieldConfig;
 
     @Column(name = "created_at")
     private LocalDateTime createdAt;

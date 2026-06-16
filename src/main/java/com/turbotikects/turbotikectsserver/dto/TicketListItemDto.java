@@ -4,6 +4,7 @@ import lombok.Data;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 
 @Data
 public class TicketListItemDto {
@@ -22,4 +23,5 @@ public class TicketListItemDto {
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
     private int version;
+    private Map<String, Object> ticketData;
 }
