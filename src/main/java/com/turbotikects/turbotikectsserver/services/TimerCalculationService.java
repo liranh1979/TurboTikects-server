@@ -23,9 +23,9 @@ public class TimerCalculationService {
                                          double durationValue,
                                          String durationUnit,
                                          List<HoursOfOperationEntity> schedule) {
-        double totalHours = "days".equalsIgnoreCase(durationUnit)
-                ? durationValue * 8.0
-                : durationValue;
+        double totalHours = "days".equalsIgnoreCase(durationUnit)    ? durationValue * 8.0
+                          : "minutes".equalsIgnoreCase(durationUnit) ? durationValue / 60.0
+                          :                                             durationValue;  // hours
 
         if (schedule == null || schedule.isEmpty()) {
             // No HoO configured: treat all hours as business hours
