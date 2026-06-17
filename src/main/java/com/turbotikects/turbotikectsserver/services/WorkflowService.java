@@ -3,10 +3,12 @@ package com.turbotikects.turbotikectsserver.services;
 import com.turbotikects.turbotikectsserver.dto.PatchWorkflowItemDto;
 import com.turbotikects.turbotikectsserver.dto.WorkflowItemDto;
 import com.turbotikects.turbotikectsserver.entitys.GroupMemberEntity;
+import com.turbotikects.turbotikectsserver.entitys.TicketEntity;
 import com.turbotikects.turbotikectsserver.entitys.TemplateVersionEntity;
 import com.turbotikects.turbotikectsserver.entitys.WorkflowItemEntity;
 import com.turbotikects.turbotikectsserver.repositorys.GroupMemberRepository;
 import com.turbotikects.turbotikectsserver.repositorys.TemplateVersionRepository;
+import com.turbotikects.turbotikectsserver.repositorys.TicketRepository;
 import com.turbotikects.turbotikectsserver.repositorys.UserRepository;
 import com.turbotikects.turbotikectsserver.repositorys.WorkflowItemRepository;
 import lombok.extern.slf4j.Slf4j;
@@ -29,6 +31,8 @@ public class WorkflowService {
     private final UserRepository userRepo;
     private final GroupMemberRepository groupMemberRepo;
     private final AdminInboxService adminInboxService;
+    private final NotificationService notificationService;
+    private final TicketRepository ticketRepo;
 
     @Value("${app.frontend.url:http://localhost:5173}")
     private String frontendUrl;
@@ -37,12 +41,16 @@ public class WorkflowService {
                            TemplateVersionRepository versionRepo,
                            UserRepository userRepo,
                            GroupMemberRepository groupMemberRepo,
-                           @Autowired AdminInboxService adminInboxService) {
+                           @Autowired AdminInboxService adminInboxService,
+                           @Autowired NotificationService notificationService,
+                           @Autowired TicketRepository ticketRepo) {
         this.workflowItemRepo = workflowItemRepo;
         this.versionRepo = versionRepo;
         this.userRepo = userRepo;
         this.groupMemberRepo = groupMemberRepo;
         this.adminInboxService = adminInboxService;
+        this.notificationService = notificationService;
+        this.ticketRepo = ticketRepo;
     }
 
     // ── SEED ─────────────────────────────────────────────────────────────────
@@ -290,13 +298,43 @@ public class WorkflowService {
 
     private void notifyAssigneeAsync(WorkflowItemEntity item, Long ticketId) {
         if (item.getAssignedUserId() == null && item.getAssignedGroupId() == null) return;
+
+        // Snapshot values needed in the background thread (avoid detached entity access)
+        Long    itemId          = item.getId();
+        String  itemTitle       = item.getTitle();
+        Integer assignedUserId  = item.getAssignedUserId();
+        Integer assignedGroupId = item.getAssignedGroupId();
+
         new Thread(() -> {
             try {
-                String key = "wf_" + item.getId();
-                adminInboxService.createIfAbsent(ticketId, key, "WORKFLOW_ACTIVATED",
-                        "You were assigned to: " + item.getTitle() + " [TT-" + ticketId + "]");
+                // Global in-app admin inbox entry (deduped per item)
+                adminInboxService.createIfAbsent(ticketId, "wf_" + itemId, "WORKFLOW_ACTIVATED",
+                        "Workflow item activated: " + itemTitle + " [TT-" + ticketId + "]");
+
+                // Email notifications per recipient
+                TicketEntity ticket = ticketRepo.findById(ticketId).orElse(null);
+                if (ticket == null) return;
+
+                WorkflowItemEntity freshItem = workflowItemRepo.findById(itemId).orElse(null);
+                if (freshItem == null) return;
+
+                List<Long> recipientIds = new ArrayList<>();
+                if (assignedUserId != null) {
+                    recipientIds.add(assignedUserId.longValue());
+                }
+                if (assignedGroupId != null) {
+                    groupMemberRepo.findByGroupId(assignedGroupId.longValue()).forEach(m -> {
+                        if (!recipientIds.contains(m.getUserId())) {
+                            recipientIds.add(m.getUserId());
+                        }
+                    });
+                }
+
+                for (Long recipientId : recipientIds) {
+                    notificationService.sendWorkflowItemNotification(freshItem, ticket, recipientId);
+                }
             } catch (Exception e) {
-                log.error("[Workflow] Notification error for item {}: {}", item.getId(), e.getMessage(), e);
+                log.error("[Workflow] Notification error for item {}: {}", itemId, e.getMessage(), e);
             }
         }).start();
     }

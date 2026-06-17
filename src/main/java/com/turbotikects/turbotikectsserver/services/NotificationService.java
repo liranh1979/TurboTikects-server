@@ -119,6 +119,62 @@ public class NotificationService {
         }).start();
     }
 
+    // ── Workflow notifications ────────────────────────────────────────────────
+
+    public void sendWorkflowItemNotification(WorkflowItemEntity item, TicketEntity ticket, Long recipientUserId) {
+        log.info("[Notification] workflow_item_activated ticketId={} itemId={} recipientUserId={}",
+                ticket.getId(), item.getId(), recipientUserId);
+
+        Optional<NotificationTemplateEntity> tmplOpt = templateRepo.findByNotificationType("workflow_item_activated");
+        if (tmplOpt.isEmpty()) {
+            log.warn("[Notification] SKIPPED – template 'workflow_item_activated' not found in DB (run V61 migration)");
+            return;
+        }
+        if (!tmplOpt.get().isEnabled()) {
+            log.info("[Notification] SKIPPED – template 'workflow_item_activated' is disabled");
+            return;
+        }
+
+        Optional<EmailMailboxEntity> mailboxOpt = emailSenderService.getDefaultSender();
+        if (mailboxOpt.isEmpty()) {
+            log.warn("[Notification] SKIPPED – no default sender mailbox configured");
+            return;
+        }
+
+        UserEntity recipient = userRepo.findById(recipientUserId).orElse(null);
+        if (recipient == null) {
+            log.warn("[Notification] SKIPPED – recipient user {} not found", recipientUserId);
+            return;
+        }
+        if (recipient.getEmail() == null || recipient.getEmail().isBlank()) {
+            log.warn("[Notification] SKIPPED – recipient user {} has no email address", recipientUserId);
+            return;
+        }
+
+        NotificationTemplateEntity tmpl = tmplOpt.get();
+        String subject = resolveWorkflowPlaceholders(tmpl.getSubjectTemplate(), item, ticket);
+        String body    = resolveWorkflowPlaceholders(tmpl.getBodyTemplate(),    item, ticket);
+
+        log.info("[Notification] Sending 'workflow_item_activated' to {} for ticket {} item {}",
+                recipient.getEmail(), ticket.getId(), item.getId());
+        emailSenderService.sendReply(mailboxOpt.get(), recipient.getEmail(), subject, body, ticket.getId());
+
+        try {
+            writeOutboundActivity(ticket.getId(), null, recipient.getEmail(), subject, body);
+        } catch (Exception ex) {
+            log.warn("[Notification] Could not write activity log for workflow item {} ({})",
+                    item.getId(), ex.getMessage());
+        }
+    }
+
+    private String resolveWorkflowPlaceholders(String template, WorkflowItemEntity item, TicketEntity ticket) {
+        String workflowUrl = frontendUrl + "?ticket=" + ticket.getId();
+        return template
+                .replace("{{workflow_title}}", escapeHtml(item.getTitle()))
+                .replace("{{ticket_id}}",      String.valueOf(ticket.getId()))
+                .replace("{{workflow_url}}",   workflowUrl);
+    }
+
     // ── Diagnostic helper ─────────────────────────────────────────────────────
 
     public Map<String, Object> diagnose(Long ticketId) {
