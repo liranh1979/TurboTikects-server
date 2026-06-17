@@ -64,6 +64,7 @@ public class TicketAiService {
             entry.put("id", t.getId());
             entry.put("name", t.getName());
             entry.put("description", t.getDescription());
+            entry.put("aiPurpose", t.getAiPurpose());
             Optional<TemplateVersionEntity> version = versionRepo.findByTemplateIdAndIsCurrentTrue(t.getId());
             version.ifPresent(v -> {
                 entry.put("versionId", v.getId());

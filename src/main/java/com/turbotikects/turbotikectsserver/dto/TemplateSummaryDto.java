@@ -9,6 +9,7 @@ public class TemplateSummaryDto {
     private Long id;
     private String name;
     private String description;
+    private String aiPurpose;
     private int currentVersionNumber;
     private boolean isDefault;
     private LocalDateTime createdAt;

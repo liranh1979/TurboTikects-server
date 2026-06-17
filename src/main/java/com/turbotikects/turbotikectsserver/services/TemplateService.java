@@ -60,6 +60,7 @@ public class TemplateService {
         TemplateEntity template = new TemplateEntity();
         template.setName(dto.getName() != null ? dto.getName() : "New Template");
         template.setDescription(dto.getDescription());
+        template.setAiPurpose(dto.getAiPurpose());
         template = templateRepo.save(template);
 
         TemplateVersionEntity version = new TemplateVersionEntity();
@@ -87,6 +88,7 @@ public class TemplateService {
 
         if (dto.getName() != null) template.setName(dto.getName());
         if (dto.getDescription() != null) template.setDescription(dto.getDescription());
+        if (dto.getAiPurpose() != null) template.setAiPurpose(dto.getAiPurpose());
         template = templateRepo.save(template);
 
         TemplateVersionEntity current = versionRepo.findByTemplateIdAndIsCurrentTrue(id)
@@ -231,6 +233,7 @@ public class TemplateService {
         dto.setId(t.getId());
         dto.setName(t.getName());
         dto.setDescription(t.getDescription());
+        dto.setAiPurpose(t.getAiPurpose());
         dto.setCurrentVersionNumber(v.getVersionNumber());
         dto.setCurrentVersionId(v.getId());
         dto.setLayout(enrichLayoutWithAdminOnly(v.getLayout()));

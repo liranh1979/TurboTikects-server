@@ -20,6 +20,9 @@ public class TemplateEntity {
     @Column
     private String description;
 
+    @Column(name = "ai_purpose", columnDefinition = "TEXT")
+    private String aiPurpose;
+
     @Column(name = "is_default")
     private boolean isDefault;
 

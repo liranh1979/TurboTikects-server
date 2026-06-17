@@ -10,6 +10,7 @@ public class TemplateWithLayoutDto {
     private Long id;
     private String name;
     private String description;
+    private String aiPurpose;
     private int currentVersionNumber;
     private Long currentVersionId;
     private Map<String, Object> layout;
