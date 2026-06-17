@@ -220,6 +220,19 @@ public class TicketService {
         event.setOperation("TICKET_CREATED");
         sseService.publish(event);
 
+        // Seed workflow items (no-op if template has no workflow field)
+        final Long finalTicketId = ticket.getId();
+        final Long finalVersionId = ticket.getTemplateVersionId();
+        final String finalStatus = ticket.getStatus();
+        new Thread(() -> {
+            try {
+                workflowService.seedWorkflowItems(finalTicketId, finalVersionId);
+                workflowService.cascadeTicketStatus(finalTicketId, finalStatus);
+            } catch (Exception e) {
+                log.warn("[Workflow] Seed error for ticket {}: {}", finalTicketId, e.getMessage(), e);
+            }
+        }).start();
+
         // Notifications (async)
         final TicketEntity savedTicket = ticket;
         notificationService.onTicketCreated(savedTicket, actorId);
@@ -241,7 +254,8 @@ public class TicketService {
 
         Map<String, Object> changes = new LinkedHashMap<>();
 
-        // Capture pre-update responsible values for notification comparison
+        // Capture pre-update values for notifications and workflow cascade
+        final String previousStatus              = ticket.getStatus();
         final Integer previousResponsibleUserId  = ticket.getResponsibleUserId();
         final Integer previousResponsibleGroupId = ticket.getResponsibleGroupId();
 
@@ -314,6 +328,19 @@ public class TicketService {
         event.setNewVersion(ticket.getVersion());
         event.setChangedFields(new ArrayList<>(changes.keySet()));
         sseService.publish(event);
+
+        // Cascade workflow item statuses when ticket status changed
+        if (dto.getStatus() != null && !dto.getStatus().equals(previousStatus)) {
+            final Long wfTicketId = ticket.getId();
+            final String newStatus = ticket.getStatus();
+            new Thread(() -> {
+                try {
+                    workflowService.cascadeTicketStatus(wfTicketId, newStatus);
+                } catch (Exception e) {
+                    log.warn("[Workflow] Cascade error for ticket {}: {}", wfTicketId, e.getMessage(), e);
+                }
+            }).start();
+        }
 
         // Notifications (async, only when something actually changed)
         if (!changes.isEmpty()) {
@@ -508,6 +535,9 @@ public class TicketService {
 
     @Autowired
     private NotificationService notificationService;
+
+    @Autowired
+    private WorkflowService workflowService;
 
     public Map<String, Object> saveAiSolution(Long ticketId, String solution, Integer actorId) {
         if (!ticketRepo.existsById(ticketId)) {
