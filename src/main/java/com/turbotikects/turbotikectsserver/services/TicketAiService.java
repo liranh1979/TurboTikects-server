@@ -56,7 +56,7 @@ public class TicketAiService {
             throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "No AI configured");
         }
 
-        // Build template inventory
+        // Build template inventory — only metadata, not the full layout (too noisy for LLM matching)
         List<TemplateEntity> templates = templateRepo.findAll();
         List<Map<String, Object>> templateInventory = new ArrayList<>();
         for (TemplateEntity t : templates) {
@@ -64,13 +64,9 @@ public class TicketAiService {
             entry.put("id", t.getId());
             entry.put("name", t.getName());
             entry.put("description", t.getDescription());
-            entry.put("aiPurpose", t.getAiPurpose());
-            Optional<TemplateVersionEntity> version = versionRepo.findByTemplateIdAndIsCurrentTrue(t.getId());
-            version.ifPresent(v -> {
-                entry.put("versionId", v.getId());
-                entry.put("versionNumber", v.getVersionNumber());
-                entry.put("layout", v.getLayout());
-            });
+            if (t.getAiPurpose() != null && !t.getAiPurpose().isBlank()) {
+                entry.put("aiPurpose", t.getAiPurpose());
+            }
             templateInventory.add(entry);
         }
 
@@ -97,15 +93,20 @@ public class TicketAiService {
 
         LlmStructure system = new LlmStructure();
         system.setRole("system");
-        system.setContent("You are a ticket routing assistant. Given a problem description and available " +
-                "templates with their fields, pick the best template match and suggest pre-filled field values. " +
+        system.setContent(
+                "You are a ticket routing assistant. Your job is to read a natural-language request " +
+                "(which may be informal, indirect, or conversational) and match it to the best support ticket template. " +
+                "Interpret the intent, not just the literal words — e.g. 'new employee joining next week' or " +
+                "'david coming to the office' should match a 'New Worker' or 'Onboarding' template. " +
+                "Use the template's name, description, and aiPurpose (if present) to decide. " +
+                "Also suggest any relevant labels and pre-fill obvious field values from the request. " +
                 "Return ONLY valid JSON, no markdown, no code fences.");
 
         LlmStructure user = new LlmStructure();
         user.setRole("user");
-        user.setContent("Templates:\n" + templatesJson +
+        user.setContent("Available templates:\n" + templatesJson +
                 "\n\nAvailable labels:\n" + labelsJson +
-                "\n\nProblem description:\n" + problem +
+                "\n\nUser request:\n" + problem +
                 "\n\nReturn JSON: {\"matchedTemplateId\": N, \"confidence\": 0-100, " +
                 "\"suggestedFields\": {\"fieldKey\": \"value\"}, " +
                 "\"suggestedLabelIds\": [N], \"suggestedLabelKeys\": [\"key\"], \"reasoning\": \"...\"}");
