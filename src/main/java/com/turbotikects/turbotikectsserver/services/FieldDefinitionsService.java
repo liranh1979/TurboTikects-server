@@ -57,9 +57,23 @@ public class FieldDefinitionsService {
 
     public Map<String, String> getFieldTranslations(String langCode, String translationType) {
         Map<String, String> result = new HashMap<>();
-        Optional<List<DynamicTranslationsEntity>> entries =
-                dynamicTranslationsRepository.findAllByLangCodeAndType(langCode, translationType);
-        entries.ifPresent(list -> list.forEach(e -> result.put(e.getTranslationKey(), e.getTranslatedText())));
+
+        // English is the master key set: fields/keys added later only ever get an English
+        // row (per project convention), so non-English languages fall back to it for keys
+        // they don't have a translation for yet — otherwise those fields vanish from the
+        // list entirely instead of showing the English label.
+        dynamicTranslationsRepository.findAllByLangCodeAndType("en", translationType)
+                .ifPresent(list -> list.forEach(e -> result.put(e.getTranslationKey(), e.getTranslatedText())));
+
+        if (!"en".equals(langCode)) {
+            dynamicTranslationsRepository.findAllByLangCodeAndType(langCode, translationType)
+                    .ifPresent(list -> list.forEach(e -> {
+                        if (e.getTranslatedText() != null && !e.getTranslatedText().isBlank()) {
+                            result.put(e.getTranslationKey(), e.getTranslatedText());
+                        }
+                    }));
+        }
+
         return result;
     }
 

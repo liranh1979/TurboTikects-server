@@ -35,13 +35,23 @@ public class DynamicTranslationsService {
     public Map<String,String> getSystemFields(String langCode){
 
         Map<String,String> systemFields = new HashMap<>();
-        Optional<List<DynamicTranslationsEntity>> systemFieldsRepository =  dynamicTranslationsRepository.findAllByLangCodeAndType(langCode, "system");
-        if(systemFieldsRepository.isPresent()){
 
-            for(DynamicTranslationsEntity dynamicTranslations : systemFieldsRepository.get()){
-                systemFields.put(dynamicTranslations.getTranslationKey(),dynamicTranslations.getTranslatedText());
-            }
+        // English is the master key set: any key added via migration only ever gets an
+        // English row (per project convention), so non-English languages fall back to it
+        // for keys they don't have yet — otherwise those keys vanish from lists entirely
+        // and untranslated strings render blank instead of showing English.
+        dynamicTranslationsRepository.findAllByLangCodeAndType("en", "system")
+                .ifPresent(list -> list.forEach(e -> systemFields.put(e.getTranslationKey(), e.getTranslatedText())));
+
+        if (!"en".equals(langCode)) {
+            dynamicTranslationsRepository.findAllByLangCodeAndType(langCode, "system")
+                    .ifPresent(list -> list.forEach(e -> {
+                        if (e.getTranslatedText() != null && !e.getTranslatedText().isBlank()) {
+                            systemFields.put(e.getTranslationKey(), e.getTranslatedText());
+                        }
+                    }));
         }
+
         return systemFields;
     }
 
@@ -64,14 +74,17 @@ public class DynamicTranslationsService {
     }
 
     @Transactional
-    @CacheEvict(cacheNames = "system_fields", key = "#code")
+    @CacheEvict(cacheNames = "system_fields", allEntries = true)
     public void deleteLanguage(String code) {
         dynamicTranslationsRepository.deleteByLangCode(code);
         systemLanguagesRepository.deleteById(code);
     }
 
+    // allEntries: every cached language now embeds English as a fallback for its missing
+    // keys, so editing English (or any language) can change what other languages resolve to —
+    // a single-key evict would leave their cached fallback values stale.
     @Transactional
-    @CacheEvict(cacheNames = "system_fields", key = "#dto.lang")
+    @CacheEvict(cacheNames = "system_fields", allEntries = true)
     public void updateTranslations(UpdateTranslationsRequestDto dto) {
         List<DynamicTranslationsEntity> entities = dynamicTranslationsRepository.findByLangCode(dto.getLang());
         Map<String, DynamicTranslationsEntity> byKey = new HashMap<>();
