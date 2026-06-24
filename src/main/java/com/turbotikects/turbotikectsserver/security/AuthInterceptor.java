@@ -38,8 +38,10 @@ public class AuthInterceptor implements HandlerInterceptor {
             return false;
         }
 
-        // Always read companyId fresh from DB so changes made after login take effect immediately
+        // Always read companyId/preferredLanguage fresh from DB so changes made after login
+        // (e.g. via Personal Settings) take effect immediately, not just after re-login.
         user.setCompanyId(userService.getEffectiveCompanyId(user.getUserId()));
+        user.setPreferredLanguage(userService.getPreferredLanguage(user.getUserId()));
 
         request.setAttribute("currentUser", user);
         return true;

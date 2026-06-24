@@ -44,7 +44,14 @@ public class LoginController {
             return null;
         }
 
-        return userService.getSessionReadOnly(cookie.getValue());
+        UserDto userDto = userService.getSessionReadOnly(cookie.getValue());
+        // "/api/v1/auth/**" is public, so AuthInterceptor's per-request freshening never runs
+        // for this endpoint — refresh preferredLanguage here too, otherwise a Personal
+        // Settings language change wouldn't take effect until the next login.
+        if (userDto != null) {
+            userDto.setPreferredLanguage(userService.getPreferredLanguage(userDto.getUserId()));
+        }
+        return userDto;
     }
 
     @PostMapping("/api/v1/auth/logout")

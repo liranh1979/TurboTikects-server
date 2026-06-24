@@ -136,6 +136,13 @@ public class UserService {
         return userRepository.findById(userId).map(u -> u.getCompanyId()).orElse(null);
     }
 
+    // Mirrors getEffectiveCompanyId — the cached session DTO is a snapshot from login time,
+    // so anything a user can change about themselves mid-session (Personal Settings) must be
+    // re-read fresh from the DB rather than trusted from the cache.
+    public String getPreferredLanguage(Long userId) {
+        return userRepository.findById(userId).map(UserEntity::getPreferredLanguage).orElse(null);
+    }
+
     private UserDto buildUserDto(UserEntity user) {
         UserDto dto = new UserDto();
         dto.setUserId(user.getRed_id());
@@ -145,6 +152,7 @@ public class UserService {
         dto.setMetadata(user.getMetadata());
         dto.setEffectivePermissions(permissionService.computeEffectivePermissions(user.getRed_id()));
         dto.setCompanyId(user.getCompanyId());
+        dto.setPreferredLanguage(user.getPreferredLanguage());
         return dto;
     }
 

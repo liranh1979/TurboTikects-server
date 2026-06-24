@@ -30,4 +30,7 @@ public class UserDto {
 
     @JsonProperty("company_id")
     private Integer companyId;
+
+    @JsonProperty("preferred_language")
+    private String preferredLanguage;
 }
