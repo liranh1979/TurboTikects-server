@@ -31,6 +31,7 @@ public class CompanyService {
     @Autowired private GroupRepository            groupRepo;
     @Autowired private TicketRepository           ticketRepo;
     @Autowired private AiSettingsService          aiSettingsService;
+    @Autowired private SystemSettingsService      systemSettingsService;
 
     // ── COMPANY CRUD ──────────────────────────────────────────────────────────
 
@@ -44,7 +45,7 @@ public class CompanyService {
         CompanyEntity e = new CompanyEntity();
         e.setName(dto.getName().trim());
         e.setDescription(dto.getDescription());
-        e.setTimezone(dto.getTimezone() != null && !dto.getTimezone().isBlank() ? dto.getTimezone() : "UTC");
+        e.setTimezone(dto.getTimezone() != null && !dto.getTimezone().isBlank() ? dto.getTimezone() : systemSettingsService.getDefaultTimezone());
         return toDto(companyRepo.save(e));
     }
 
@@ -80,13 +81,13 @@ public class CompanyService {
         List<HoursOfOperationEntity> rows = hooRepo.findByCompanyId(companyId);
         if (rows.isEmpty()) rows = hooRepo.findByCompanyIdIsNull(); // fallback to global
         String timezone = companyId != null
-                ? companyRepo.findById(companyId).map(CompanyEntity::getTimezone).orElse("UTC")
-                : "UTC";
+                ? companyRepo.findById(companyId).map(CompanyEntity::getTimezone).orElse(systemSettingsService.getDefaultTimezone())
+                : systemSettingsService.getDefaultTimezone();
         return toHooDto(rows, timezone);
     }
 
     public HoursOfOperationDto getGlobalHours() {
-        return toHooDto(hooRepo.findByCompanyIdIsNull(), "UTC");
+        return toHooDto(hooRepo.findByCompanyIdIsNull(), systemSettingsService.getDefaultTimezone());
     }
 
     @Transactional
