@@ -105,4 +105,8 @@ public class AiSettingsService {
         return llmProviderFactory.getProvider(aiSettingsEntity.getProviderName()).send(aiSettingsEntity, llmRequest);
     }
 
+    public List<String> listModels(String providerName, String apiKey) throws URISyntaxException, IOException, InterruptedException {
+        return llmProviderFactory.getProvider(providerName).listModels(apiKey);
+    }
+
 }

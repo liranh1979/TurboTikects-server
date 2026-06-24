@@ -21,27 +21,29 @@ import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
 
+// Same Gemini API as GeminiLlmProvider, but built against the stable "/v1/" path instead of
+// "/v1beta/". Google has been retiring older models (e.g. gemini-1.5-pro) from the beta surface
+// faster than the stable one, so this is offered as a separate provider choice rather than
+// silently rewriting the existing "gemini" provider's URL.
 @Slf4j
 @Component
-public class GeminiLlmProvider implements LlmProvider {
+public class GeminiStableLlmProvider implements LlmProvider {
 
     private static final String BASE_URL = "https://generativelanguage.googleapis.com";
 
     public static final LlmProviderInfoDto INFO =
-            new LlmProviderInfoDto("gemini", "Google Gemini (Beta)", "gemini-2.0-flash");
+            new LlmProviderInfoDto("gemini_stable", "Google Gemini (Stable)", "gemini-2.0-flash");
 
-    // Exact match — kept this strict (not "contains gemini/google") so it can't also claim
-    // requests meant for GeminiStableLlmProvider's distinct "gemini_stable" provider name.
     @Override
     public boolean supports(String providerName) {
-        return "gemini".equalsIgnoreCase(providerName);
+        return "gemini_stable".equalsIgnoreCase(providerName);
     }
 
     @Override
     public String send(AiSettingsEntity settings, List<LlmStructure> messages) throws IOException, URISyntaxException, InterruptedException {
         ObjectMapper mapper = new ObjectMapper();
 
-        String url = BASE_URL + "/v1beta/models/" + settings.getModelName() + ":generateContent?key=" + settings.getApiKey();
+        String url = BASE_URL + "/v1/models/" + settings.getModelName() + ":generateContent?key=" + settings.getApiKey();
 
         String systemContent = "";
         List<Map<String, Object>> contents = new ArrayList<>();
@@ -57,11 +59,26 @@ public class GeminiLlmProvider implements LlmProvider {
             }
         }
 
+        // The stable "/v1/" surface rejects "systemInstruction" on some models — observed
+        // 400 "Unknown name systemInstruction: Cannot find field" — so fold the system prompt
+        // into the first turn's text instead of using the dedicated field GeminiLlmProvider
+        // (beta) relies on. This works on every model, old or new.
+        if (!systemContent.isEmpty()) {
+            if (contents.isEmpty()) {
+                contents.add(Map.of("role", "user", "parts", List.of(Map.of("text", systemContent))));
+            } else {
+                Map<String, Object> first = contents.get(0);
+                @SuppressWarnings("unchecked")
+                String firstText = ((List<Map<String, String>>) first.get("parts")).get(0).get("text");
+                contents.set(0, Map.of(
+                        "role", first.get("role"),
+                        "parts", List.of(Map.of("text", systemContent + "\n\n" + firstText))
+                ));
+            }
+        }
+
         Map<String, Object> payload = new HashMap<>();
         payload.put("contents", contents);
-        if (!systemContent.isEmpty()) {
-            payload.put("systemInstruction", Map.of("parts", List.of(Map.of("text", systemContent))));
-        }
 
         HttpRequest request = HttpRequest.newBuilder(new URI(url))
                 .header("Content-Type", "application/json")
@@ -69,7 +86,7 @@ public class GeminiLlmProvider implements LlmProvider {
                 .build();
 
         HttpResponse<String> response = HttpClient.newHttpClient().send(request, HttpResponse.BodyHandlers.ofString());
-        log.info("Gemini send → {}", response.statusCode());
+        log.info("Gemini (stable) send → {}", response.statusCode());
 
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
             throw new IOException("Gemini API error " + response.statusCode() + ": " + response.body());
@@ -87,21 +104,21 @@ public class GeminiLlmProvider implements LlmProvider {
 
     @Override
     public AiSettingTestResultDto validateKey(AiSettingsEntity settings) throws Exception {
-        String url = BASE_URL + "/v1beta/models?key=" + settings.getApiKey();
+        String url = BASE_URL + "/v1/models?key=" + settings.getApiKey();
         HttpRequest request = HttpRequest.newBuilder(new URI(url))
                 .GET()
                 .build();
         HttpResponse<String> response = HttpClient.newHttpClient().send(request, HttpResponse.BodyHandlers.ofString());
-        log.info("Gemini validateKey → {}", response.statusCode());
+        log.info("Gemini (stable) validateKey → {}", response.statusCode());
         return buildResult(response.statusCode());
     }
 
     @Override
     public List<String> listModels(String apiKey) throws IOException, URISyntaxException, InterruptedException {
-        String url = BASE_URL + "/v1beta/models?key=" + apiKey;
+        String url = BASE_URL + "/v1/models?key=" + apiKey;
         HttpRequest request = HttpRequest.newBuilder(new URI(url)).GET().build();
         HttpResponse<String> response = HttpClient.newHttpClient().send(request, HttpResponse.BodyHandlers.ofString());
-        log.info("Gemini listModels → {}", response.statusCode());
+        log.info("Gemini (stable) listModels → {}", response.statusCode());
         if (response.statusCode() < 200 || response.statusCode() >= 300) {
             throw new IOException("Gemini API error " + response.statusCode() + ": " + response.body());
         }
