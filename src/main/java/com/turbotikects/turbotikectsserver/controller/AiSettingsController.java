@@ -10,6 +10,7 @@ import com.turbotikects.turbotikectsserver.llm.AnthropicLlmProvider;
 import com.turbotikects.turbotikectsserver.llm.DeepSeekLlmProvider;
 import com.turbotikects.turbotikectsserver.llm.GeminiLlmProvider;
 import com.turbotikects.turbotikectsserver.llm.GeminiStableLlmProvider;
+import com.turbotikects.turbotikectsserver.llm.GemmaLlmProvider;
 import com.turbotikects.turbotikectsserver.llm.OpenAiLlmProvider;
 import com.turbotikects.turbotikectsserver.llm.OpenRouterLlmProvider;
 import com.turbotikects.turbotikectsserver.security.RequirePermission;
@@ -36,7 +37,7 @@ public class AiSettingsController {
 
     @GetMapping("/providers")
     public List<LlmProviderInfoDto> getProviders() {
-        return List.of(OpenAiLlmProvider.INFO, AnthropicLlmProvider.INFO, GeminiLlmProvider.INFO, GeminiStableLlmProvider.INFO, DeepSeekLlmProvider.INFO, OpenRouterLlmProvider.INFO);
+        return List.of(OpenAiLlmProvider.INFO, AnthropicLlmProvider.INFO, GeminiLlmProvider.INFO, GeminiStableLlmProvider.INFO, DeepSeekLlmProvider.INFO, OpenRouterLlmProvider.INFO, GemmaLlmProvider.INFO);
     }
 
     @PostMapping("/models")

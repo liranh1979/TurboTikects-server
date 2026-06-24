@@ -28,6 +28,9 @@ public class AiSettingsDto {
     @JsonProperty("is_active")
     private boolean isActive;
 
+    @JsonProperty("is_system")
+    private boolean isSystem;
+
 
     @JsonProperty("created_at")
     private LocalDateTime createdAt;

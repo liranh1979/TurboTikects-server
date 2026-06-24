@@ -8,7 +8,9 @@ import com.turbotikects.turbotikectsserver.llm.LlmProviderFactory;
 import com.turbotikects.turbotikectsserver.repositorys.AiSettingsRepository;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
+import org.springframework.web.server.ResponseStatusException;
 
 import java.io.IOException;
 import java.net.URISyntaxException;
@@ -34,6 +36,7 @@ public class AiSettingsService {
             aiSettingsDto.setId(aiSettingsEntity.getId());
             aiSettingsDto.setModelName(aiSettingsEntity.getModelName());
             aiSettingsDto.setActive(aiSettingsEntity.isActive());
+            aiSettingsDto.setSystem(aiSettingsEntity.isSystem());
             aiSettingsDto.setProviderName(aiSettingsEntity.getProviderName());
             aiSettings.add(aiSettingsDto);
         }
@@ -70,8 +73,11 @@ public class AiSettingsService {
 
     public void deleteIASetting(Long aiSettingID){
 
-        AiSettingsEntity aiSettingsEntity = new AiSettingsEntity();
-        aiSettingsEntity.setId(aiSettingID);
+        AiSettingsEntity aiSettingsEntity = aiSettingsRepository.findById(aiSettingID)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "AI setting not found"));
+
+        if (aiSettingsEntity.isSystem())
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Built-in AI providers cannot be deleted. Activate a different provider to replace it.");
 
         aiSettingsRepository.delete(aiSettingsEntity);
         aiSettingsRepository.flush();

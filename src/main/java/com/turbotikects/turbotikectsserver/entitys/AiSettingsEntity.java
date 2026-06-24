@@ -17,7 +17,7 @@ public class AiSettingsEntity {
     @Column(name = "provider_name",  nullable = false)
     private String providerName;
 
-    @Column(name = "api_key",  nullable = false)
+    @Column(name = "api_key")
     private String apiKey;
 
     @Column(name = "model_name",  nullable = false)
@@ -25,6 +25,9 @@ public class AiSettingsEntity {
 
     @Column(name = "is_active",  nullable = false)
     private boolean isActive;
+
+    @Column(name = "is_system",  nullable = false)
+    private boolean isSystem;
 
     @Column(name = "created_at",  nullable = false)
     private LocalDateTime createdAt;

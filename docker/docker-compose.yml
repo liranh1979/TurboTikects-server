@@ -14,11 +14,33 @@ services:
       retries: 12
       start_period: 30s
 
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_storage:/root/.ollama
+    entrypoint: ["/bin/sh", "-c"]
+    command: >
+      "ollama serve &
+       sleep 5 &&
+       ollama pull gemma4:e2b;
+       wait"
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
   app:
     image: "${DOCKER_IMAGE}"
     restart: unless-stopped
     depends_on:
       db:
+        condition: service_healthy
+      ollama:
         condition: service_healthy
     ports:
       - "${APP_PORT}:3000"
@@ -31,9 +53,11 @@ services:
       ADMIN_PASSWORD: "${ADMIN_PASSWORD}"
       ADMIN_DISPLAY_NAME: "${ADMIN_DISPLAY_NAME}"
       CORS_ORIGINS: "http://localhost:${APP_PORT}"
+      OLLAMA_BASE_URL: http://ollama:11434
     volumes:
       - uploads:/app/uploads
 
 volumes:
   db_data:
   uploads:
+  ollama_storage:
