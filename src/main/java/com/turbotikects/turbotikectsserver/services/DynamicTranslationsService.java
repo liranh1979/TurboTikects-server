@@ -86,19 +86,44 @@ public class DynamicTranslationsService {
     @Transactional
     @CacheEvict(cacheNames = "system_fields", allEntries = true)
     public void updateTranslations(UpdateTranslationsRequestDto dto) {
-        List<DynamicTranslationsEntity> entities = dynamicTranslationsRepository.findByLangCode(dto.getLang());
+        String type = dto.getType() != null ? dto.getType() : "system";
+
+        List<DynamicTranslationsEntity> allForLang = dynamicTranslationsRepository.findByLangCode(dto.getLang());
+
+        // Index only rows belonging to this type — (lang_code, translation_key, type) is the
+        // real unique key, so matching on translationKey alone could update the wrong row if
+        // the same key string also exists under a different type for this language.
         Map<String, DynamicTranslationsEntity> byKey = new HashMap<>();
-        for (DynamicTranslationsEntity e : entities) {
-            byKey.put(e.getTranslationKey(), e);
-        }
-        for (Map.Entry<String, String> entry : dto.getTranslations().entrySet()) {
-            DynamicTranslationsEntity entity = byKey.get(entry.getKey());
-            if (entity != null) {
-                entity.setTranslatedText(entry.getValue());
-                entity.setUpdateData(LocalDateTime.now());
+        for (DynamicTranslationsEntity e : allForLang) {
+            if (type.equals(e.getType())) {
+                byKey.put(e.getTranslationKey(), e);
             }
         }
-        dynamicTranslationsRepository.saveAll(byKey.values());
+
+        List<DynamicTranslationsEntity> toSave = new ArrayList<>();
+        for (Map.Entry<String, String> entry : dto.getTranslations().entrySet()) {
+            String key = entry.getKey();
+            DynamicTranslationsEntity existing = byKey.get(key);
+            if (existing != null) {
+                existing.setTranslatedText(entry.getValue());
+                existing.setUpdateData(LocalDateTime.now());
+                toSave.add(existing);
+            } else {
+                // Missing row — happens whenever a key was added to English only (e.g. via a
+                // later Flyway migration) after this language was created. Without this branch
+                // an AI-translated value shows up in the UI but is silently dropped on save,
+                // reappearing blank after the next reload.
+                DynamicTranslationsEntity newEntity = new DynamicTranslationsEntity();
+                newEntity.setLangCode(dto.getLang());
+                newEntity.setTranslationKey(key);
+                newEntity.setTranslatedText(entry.getValue());
+                newEntity.setType(type);
+                newEntity.setUpdateData(LocalDateTime.now());
+                toSave.add(newEntity);
+            }
+        }
+
+        dynamicTranslationsRepository.saveAll(toSave);
     }
 
     private void copyAllFilesToNewLanguage(AddLanguageRequestDto addLanguageRequestDto){
