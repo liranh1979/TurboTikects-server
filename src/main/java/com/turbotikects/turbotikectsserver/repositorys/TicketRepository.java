@@ -7,6 +7,7 @@ import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDateTime;
 import java.util.List;
 
 public interface TicketRepository extends JpaRepository<TicketEntity, Long> {
@@ -73,4 +74,41 @@ public interface TicketRepository extends JpaRepository<TicketEntity, Long> {
     void updateCompanyForUser(@Param("userId") Integer userId, @Param("companyId") Integer companyId);
 
     List<TicketEntity> findByStatusNotIn(List<String> statuses);
+
+    // ── DASHBOARD AGGREGATES ─────────────────────────────────────────────────
+    // Same company-scoping idiom as findPage/searchPage above (fallback to the
+    // requester's users.company_id since tickets.company_id isn't always set).
+
+    @Query(value = """
+            SELECT DATE(t.created_at) AS bucket, COUNT(*) AS cnt
+            FROM tickets t LEFT JOIN users u ON u.red_id = t.request_user_id
+            WHERE t.created_at >= :since
+              AND (:companyId IS NULL OR t.company_id = :companyId OR u.company_id = :companyId)
+            GROUP BY DATE(t.created_at) ORDER BY bucket
+            """, nativeQuery = true)
+    List<Object[]> countCreatedByDaySince(@Param("since") LocalDateTime since, @Param("companyId") Integer companyId);
+
+    @Query(value = """
+            SELECT HOUR(t.created_at) AS bucket, COUNT(*) AS cnt
+            FROM tickets t LEFT JOIN users u ON u.red_id = t.request_user_id
+            WHERE t.created_at >= :since
+              AND (:companyId IS NULL OR t.company_id = :companyId OR u.company_id = :companyId)
+            GROUP BY HOUR(t.created_at) ORDER BY bucket
+            """, nativeQuery = true)
+    List<Object[]> countCreatedByHourSince(@Param("since") LocalDateTime since, @Param("companyId") Integer companyId);
+
+    @Query(value = """
+            SELECT t.status AS status, COUNT(*) AS cnt
+            FROM tickets t LEFT JOIN users u ON u.red_id = t.request_user_id
+            WHERE (:companyId IS NULL OR t.company_id = :companyId OR u.company_id = :companyId)
+            GROUP BY t.status
+            """, nativeQuery = true)
+    List<Object[]> countByStatus(@Param("companyId") Integer companyId);
+
+    @Query(value = """
+            SELECT COUNT(*) AS cnt, MAX(t.updated_at) AS last_update
+            FROM tickets t LEFT JOIN users u ON u.red_id = t.request_user_id
+            WHERE (:companyId IS NULL OR t.company_id = :companyId OR u.company_id = :companyId)
+            """, nativeQuery = true)
+    List<Object[]> fingerprintData(@Param("companyId") Integer companyId);
 }
