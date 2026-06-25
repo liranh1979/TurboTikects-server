@@ -36,6 +36,15 @@
 # ── DTOs: Jackson serialization needs field and method names ────────────
 -keep class com.turbotikects.turbotikectsserver.dto.** { *; }
 
+# ── LLM provider response-parsing helper classes (e.g. GemmaLlmProvider's
+# OllamaModel, GeminiLlmProvider's GeminiResponse/Candidate/Content): these live
+# next to each LlmProvider implementation rather than in dto/, so the rule above
+# doesn't cover them. Jackson binds them by getter/setter name via reflection —
+# without this they get silently mis-parsed (fields stay null, no exception) once
+# obfuscated. Every such helper class in this codebase is tagged @JsonIgnoreProperties,
+# so keying off that annotation covers all of them, present and future.
+-keep @com.fasterxml.jackson.annotation.JsonIgnoreProperties class * { *; }
+
 # ── ApplicationRunner / CommandLineRunner implementations ───────────────
 -keep class * implements org.springframework.boot.ApplicationRunner { *; }
 -keep class * implements org.springframework.boot.CommandLineRunner { *; }
