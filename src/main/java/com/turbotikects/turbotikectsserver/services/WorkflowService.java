@@ -108,6 +108,47 @@ public class WorkflowService {
         log.info("[Workflow] Seeded {} items for ticket {}", nodeIdToItem.size(), ticketId);
     }
 
+    // ── CLONE ────────────────────────────────────────────────────────────────
+
+    /**
+     * Copies every workflow item from sourceTicketId onto newTicketId as an exact snapshot —
+     * same status/assignee/field values, not re-seeded from the template. Two-pass like
+     * seedWorkflowItems: items are saved first to get DB-generated ids, then parentItemId
+     * references are remapped old-id -> new-id in a second pass.
+     */
+    @Transactional
+    public void cloneWorkflowItems(Long sourceTicketId, Long newTicketId) {
+        List<WorkflowItemEntity> sourceItems = workflowItemRepo.findByTicketIdOrderByDisplayOrder(sourceTicketId);
+        if (sourceItems.isEmpty()) return;
+
+        Map<Long, Long> oldToNewId = new HashMap<>();
+        List<WorkflowItemEntity> newItems = new ArrayList<>();
+        for (WorkflowItemEntity src : sourceItems) {
+            WorkflowItemEntity copy = new WorkflowItemEntity();
+            copy.setTicketId(newTicketId);
+            copy.setTemplateNodeId(src.getTemplateNodeId());
+            copy.setTitle(src.getTitle());
+            copy.setStatus(src.getStatus());
+            copy.setAssignedUserId(src.getAssignedUserId());
+            copy.setAssignedGroupId(src.getAssignedGroupId());
+            copy.setFieldValues(src.getFieldValues() != null ? new LinkedHashMap<>(src.getFieldValues()) : null);
+            copy.setDisplayOrder(src.getDisplayOrder());
+            copy = workflowItemRepo.save(copy);
+            newItems.add(copy);
+            oldToNewId.put(src.getId(), copy.getId());
+        }
+        for (int i = 0; i < sourceItems.size(); i++) {
+            Long oldParentId = sourceItems.get(i).getParentItemId();
+            if (oldParentId != null) {
+                WorkflowItemEntity item = newItems.get(i);
+                item.setParentItemId(oldToNewId.get(oldParentId));
+                workflowItemRepo.save(item);
+            }
+        }
+
+        log.info("[Workflow] Cloned {} items from ticket {} to ticket {}", newItems.size(), sourceTicketId, newTicketId);
+    }
+
     // ── STATUS CASCADE ────────────────────────────────────────────────────────
 
     /**

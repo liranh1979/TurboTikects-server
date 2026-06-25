@@ -178,6 +178,35 @@ public class TicketService {
 
     @Transactional
     public TicketDetailDto create(CreateTicketRequestDto dto, Integer actorId) {
+        return createInternal(dto, actorId, true);
+    }
+
+    // ── CLONE ─────────────────────────────────────────────────────────────────
+
+    @Transactional
+    public TicketDetailDto clone(Long sourceId, String overrideTitle, Integer actorId) {
+        TicketEntity source = ticketRepo.findById(sourceId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+
+        CreateTicketRequestDto dto = new CreateTicketRequestDto();
+        dto.setTitle(overrideTitle != null && !overrideTitle.isBlank() ? overrideTitle : source.getTitle());
+        dto.setDescription(source.getDescription());
+        dto.setStatus("new");
+        dto.setTemplateId(source.getTemplateId());
+        dto.setTemplateVersionId(source.getTemplateVersionId());
+        dto.setResponsibleUserId(source.getResponsibleUserId());
+        dto.setResponsibleGroupId(source.getResponsibleGroupId());
+        dto.setTicketData(source.getTicketData() != null ? new LinkedHashMap<>(source.getTicketData()) : null);
+        dto.setLabelIds(labelAssignmentRepo.findByTicketId(sourceId).stream()
+                .map(TicketLabelAssignmentEntity::getLabelId).collect(Collectors.toList()));
+
+        TicketDetailDto created = createInternal(dto, actorId, false);
+        workflowService.cloneWorkflowItems(sourceId, created.getId());
+        writeActivityLog(created.getId(), actorId, "TICKET_CLONED", Map.of("sourceTicketId", sourceId));
+        return created;
+    }
+
+    private TicketDetailDto createInternal(CreateTicketRequestDto dto, Integer actorId, boolean seedWorkflowFromTemplate) {
         TicketEntity ticket = new TicketEntity();
         ticket.setTitle(dto.getTitle());
         ticket.setDescription(dto.getDescription());
@@ -220,18 +249,21 @@ public class TicketService {
         event.setOperation("TICKET_CREATED");
         sseService.publish(event);
 
-        // Seed workflow items (no-op if template has no workflow field)
-        final Long finalTicketId = ticket.getId();
-        final Long finalVersionId = ticket.getTemplateVersionId();
-        final String finalStatus = ticket.getStatus();
-        new Thread(() -> {
-            try {
-                workflowService.seedWorkflowItems(finalTicketId, finalVersionId);
-                workflowService.cascadeTicketStatus(finalTicketId, finalStatus);
-            } catch (Exception e) {
-                log.warn("[Workflow] Seed error for ticket {}: {}", finalTicketId, e.getMessage(), e);
-            }
-        }).start();
+        // Seed workflow items from the template (no-op if it has no workflow field).
+        // Skipped for clones — they copy the source ticket's real workflow items instead.
+        if (seedWorkflowFromTemplate) {
+            final Long finalTicketId = ticket.getId();
+            final Long finalVersionId = ticket.getTemplateVersionId();
+            final String finalStatus = ticket.getStatus();
+            new Thread(() -> {
+                try {
+                    workflowService.seedWorkflowItems(finalTicketId, finalVersionId);
+                    workflowService.cascadeTicketStatus(finalTicketId, finalStatus);
+                } catch (Exception e) {
+                    log.warn("[Workflow] Seed error for ticket {}: {}", finalTicketId, e.getMessage(), e);
+                }
+            }).start();
+        }
 
         // Notifications (async)
         final TicketEntity savedTicket = ticket;

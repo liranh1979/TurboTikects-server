@@ -91,6 +91,16 @@ public class TicketController {
         return ticketService.create(dto, userId);
     }
 
+    // ── CLONE ─────────────────────────────────────────────────────────────────
+
+    @PostMapping("/{id}/clone")
+    @ResponseStatus(HttpStatus.CREATED)
+    public TicketDetailDto clone(@PathVariable Long id,
+                                  @RequestBody(required = false) CloneTicketRequestDto dto,
+                                  HttpServletRequest request) {
+        return ticketService.clone(id, dto != null ? dto.getTitle() : null, currentUserId(request));
+    }
+
     // ── PATCH ─────────────────────────────────────────────────────────────────
 
     @PatchMapping("/{id}")
