@@ -17,6 +17,8 @@ SCRIPT_DIR   = Path(__file__).resolve().parent
 DOCKERFILE   = SCRIPT_DIR / "Dockerfile"
 LAST_IMAGE   = SCRIPT_DIR / ".last_image"
 
+APP_VERSION  = "1.0.0"   # bump this to release a new version
+
 
 # ── helpers ────────────────────────────────────────────────────────────────
 
@@ -74,7 +76,7 @@ def main():
 
     print("\nDocker Hub image settings:")
     image_name = prompt("Image name (org/repo)", default_image)
-    tag        = prompt("Version tag", "latest")
+    tag        = prompt("Version tag", APP_VERSION)
     full_image = f"{image_name}:{tag}"
 
     print(f"\nWill build and push: {full_image}")
@@ -100,6 +102,7 @@ def main():
     build_cmd = ["docker", "build", "-f", str(DOCKERFILE), "-t", full_image]
     if no_cache:
         build_cmd.append("--no-cache")
+    build_cmd += ["--build-arg", f"APP_VERSION={tag}"]
     build_cmd.append(".")
     run(build_cmd)
 

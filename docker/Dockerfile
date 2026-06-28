@@ -44,11 +44,15 @@ RUN cd TurboTikects-server && ./gradlew bootJar -x test -x compileJava -x proces
 # ── Stage 2: Runtime (JRE 17 slim) ────────────────────────────────────────
 FROM eclipse-temurin:17-jre-alpine
 
+ARG APP_VERSION=dev
+ENV APP_VERSION=${APP_VERSION}
+
 WORKDIR /app
 RUN mkdir -p uploads
 
 COPY --from=build /workspace/TurboTikects-server/build/libs/*.jar app.jar
 
 EXPOSE 3000
+EXPOSE 3443
 
 ENTRYPOINT ["java", "-Djava.security.egd=file:/dev/./urandom", "-jar", "app.jar"]
