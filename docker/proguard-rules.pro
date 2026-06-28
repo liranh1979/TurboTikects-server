@@ -66,6 +66,9 @@
     private void readObject(java.io.ObjectInputStream);
 }
 
+# ── Bouncy Castle: SSL/TLS certificate parsing (PEM → PKCS12 conversion) ──
+-keep class org.bouncycastle.** { *; }
+
 # ── Suppress unavoidable warnings from Spring/library internal classes ──
 -dontwarn **
 -ignorewarnings

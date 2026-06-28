@@ -12,4 +12,5 @@ public class SetupStatusDto {
     @JsonProperty("email_configured")    private boolean emailConfigured;
     @JsonProperty("users_configured")    private boolean usersConfigured;
     @JsonProperty("sso_configured")      private boolean ssoConfigured;
+    @JsonProperty("ssl_configured")      private boolean sslConfigured;
 }

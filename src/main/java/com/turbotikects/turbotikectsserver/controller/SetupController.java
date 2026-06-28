@@ -15,6 +15,7 @@ public class SetupController {
     @Autowired private UserRepository           userRepository;
     @Autowired private AzureConfigRepository    azureConfigRepository;
     @Autowired private LdapConfigRepository     ldapConfigRepository;
+    @Autowired private SslSettingsRepository    sslSettingsRepository;
 
     @GetMapping("/status")
     public SetupStatusDto getStatus() {
@@ -24,6 +25,9 @@ public class SetupController {
         boolean usersConfigured    = userRepository.count() > 1;
         boolean ssoConfigured      = !azureConfigRepository.findBySsoEnabledTrue().isEmpty()
                                   || !ldapConfigRepository.findByIsActiveTrue().isEmpty();
-        return new SetupStatusDto(aiConfigured, templateConfigured, emailConfigured, usersConfigured, ssoConfigured);
+        boolean sslConfigured      = sslSettingsRepository.findById(1)
+                                        .map(e -> e.isEnabled()).orElse(false);
+        return new SetupStatusDto(aiConfigured, templateConfigured, emailConfigured,
+                                  usersConfigured, ssoConfigured, sslConfigured);
     }
 }
