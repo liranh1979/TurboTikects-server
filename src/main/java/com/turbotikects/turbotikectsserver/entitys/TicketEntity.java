@@ -54,6 +54,9 @@ public class TicketEntity {
     @Column(name = "company_id")
     private Integer companyId;
 
+    @Column(name = "acceleration")
+    private Integer acceleration = 0;
+
     @Column(name = "created_at")
     private LocalDateTime createdAt;
 

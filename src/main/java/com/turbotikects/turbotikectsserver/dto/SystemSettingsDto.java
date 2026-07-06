@@ -10,4 +10,5 @@ public class SystemSettingsDto {
     private String defaultTimezone;
     private String defaultTimeFormat;
     private String logoUrl;
+    private Integer accelerationCronInterval;
 }

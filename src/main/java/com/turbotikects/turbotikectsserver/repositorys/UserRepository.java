@@ -30,4 +30,18 @@ public interface UserRepository extends JpaRepository<UserEntity, Long> {
     long countByCompanyId(@Param("companyId") Integer companyId);
 
     List<UserEntity> findByIsDeletedFalse();
+
+    /** Returns non-deleted users who are super admins OR have the TICKET_MANAGER permission — suitable for ticket assignment. */
+    @Query(value = """
+            SELECT DISTINCT u.* FROM users u
+            WHERE u.is_deleted = 0
+            AND (u.is_super_admin = 1
+                 OR EXISTS (
+                   SELECT 1 FROM user_permissions up
+                   JOIN permissions p ON p.id = up.permission_id
+                   WHERE up.user_id = u.red_id AND p.permission_key = 'TICKET_MANAGER'
+                 ))
+            ORDER BY COALESCE(u.display_name, u.user_name)
+            """, nativeQuery = true)
+    List<UserEntity> findAssignableUsers();
 }

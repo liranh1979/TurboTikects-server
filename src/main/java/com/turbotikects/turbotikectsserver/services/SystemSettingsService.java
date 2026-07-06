@@ -51,6 +51,11 @@ public class SystemSettingsService {
         return getEntity().getDefaultTimezone();
     }
 
+    public Integer getAccelerationCronInterval() {
+        Integer val = getEntity().getAccelerationCronInterval();
+        return (val == null || val <= 0) ? 0 : val;
+    }
+
     @Transactional
     public SystemSettingsDto updateSettings(UpdateSystemSettingsDto dto) {
         SystemSettingsEntity e = getEntity();
@@ -65,6 +70,9 @@ public class SystemSettingsService {
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "defaultTimeFormat must be '12h' or '24h'");
             }
             e.setDefaultTimeFormat(dto.getDefaultTimeFormat());
+        }
+        if (dto.getAccelerationCronInterval() != null && dto.getAccelerationCronInterval() >= 0) {
+            e.setAccelerationCronInterval(dto.getAccelerationCronInterval());
         }
         return toDto(settingsRepo.save(e));
     }
@@ -152,6 +160,7 @@ public class SystemSettingsService {
         dto.setDefaultLanguageCode(e.getDefaultLanguageCode());
         dto.setDefaultTimezone(e.getDefaultTimezone());
         dto.setDefaultTimeFormat(e.getDefaultTimeFormat());
+        dto.setAccelerationCronInterval(e.getAccelerationCronInterval());
         if (e.getLogoPath() != null) {
             int cacheBuster = e.getUpdatedAt() != null ? e.getUpdatedAt().hashCode() : 0;
             dto.setLogoUrl("/api/v1/system-settings/logo?v=" + cacheBuster);

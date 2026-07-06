@@ -69,6 +69,16 @@
 # ── Bouncy Castle: SSL/TLS certificate parsing (PEM → PKCS12 conversion) ──
 -keep class org.bouncycastle.** { *; }
 
+# ── Groovy runtime: script compilation and execution for acceleration rules ──
+-keep class org.apache.groovy.** { *; }
+-keep class groovy.lang.** { *; }
+-keep class org.codehaus.groovy.** { *; }
+
+# ── JPA entities: Groovy accesses getters/setters reflectively at runtime ──
+-keepclassmembers @jakarta.persistence.Entity class * {
+    public <methods>;
+}
+
 # ── Suppress unavoidable warnings from Spring/library internal classes ──
 -dontwarn **
 -ignorewarnings

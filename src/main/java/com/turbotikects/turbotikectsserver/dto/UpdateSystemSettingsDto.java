@@ -9,4 +9,5 @@ public class UpdateSystemSettingsDto {
     private String defaultLanguageCode;
     private String defaultTimezone;
     private String defaultTimeFormat;
+    private Integer accelerationCronInterval;
 }

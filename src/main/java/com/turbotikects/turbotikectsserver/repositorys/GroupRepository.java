@@ -16,4 +16,16 @@ public interface GroupRepository extends JpaRepository<GroupEntity, Long> {
 
     @Query(value = "SELECT COUNT(*) FROM user_groups WHERE company_id = :companyId", nativeQuery = true)
     long countByCompanyId(@Param("companyId") Integer companyId);
+
+    /** Returns groups that have the TICKET_MANAGER permission — suitable for ticket assignment. */
+    @Query(value = """
+            SELECT DISTINCT g.* FROM user_groups g
+            WHERE EXISTS (
+              SELECT 1 FROM group_permissions gp
+              JOIN permissions p ON p.id = gp.permission_id
+              WHERE gp.group_id = g.ref_id AND p.permission_key = 'TICKET_MANAGER'
+            )
+            ORDER BY g.display_name
+            """, nativeQuery = true)
+    java.util.List<GroupEntity> findAssignableGroups();
 }

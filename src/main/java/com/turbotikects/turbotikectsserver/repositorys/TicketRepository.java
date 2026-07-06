@@ -2,6 +2,7 @@ package com.turbotikects.turbotikectsserver.repositorys;
 
 import com.turbotikects.turbotikectsserver.entitys.TicketEntity;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -10,7 +11,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.LocalDateTime;
 import java.util.List;
 
-public interface TicketRepository extends JpaRepository<TicketEntity, Long> {
+public interface TicketRepository extends JpaRepository<TicketEntity, Long>, JpaSpecificationExecutor<TicketEntity> {
 
     // JOIN with users so company filter works even if ticket.company_id is NULL
     // (e.g. ticket created before the user was assigned to a company)

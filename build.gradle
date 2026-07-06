@@ -64,6 +64,9 @@ dependencies {
     implementation 'org.bouncycastle:bcprov-jdk18on:1.78.1'
     implementation 'org.bouncycastle:bcpkix-jdk18on:1.78.1'
 
+    // Groovy: runtime script compilation and execution for acceleration rules
+    implementation 'org.apache.groovy:groovy:4.0.21'
+
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
 }
 

@@ -25,6 +25,9 @@ public class SystemSettingsEntity {
     @Column(name = "logo_path", length = 255)
     private String logoPath;
 
+    @Column(name = "acceleration_cron_interval", nullable = false)
+    private Integer accelerationCronInterval = 5;
+
     @Column(name = "updated_at")
     private LocalDateTime updatedAt;
 
