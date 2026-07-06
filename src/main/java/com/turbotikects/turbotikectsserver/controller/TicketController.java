@@ -88,7 +88,12 @@ public class TicketController {
     public TicketDetailDto create(@RequestBody CreateTicketRequestDto dto,
                                   HttpServletRequest request) {
         Integer userId = currentUserId(request);
-        return ticketService.create(dto, userId);
+        UserDto caller = currentUser(request);
+        boolean isManager = caller != null && (caller.isSuperAdmin()
+                || (caller.getEffectivePermissions() != null
+                    && caller.getEffectivePermissions().contains("TICKET_MANAGER")));
+        String source = isManager ? "admin" : "end_user";
+        return ticketService.create(dto, userId, source);
     }
 
     // ── CLONE ─────────────────────────────────────────────────────────────────

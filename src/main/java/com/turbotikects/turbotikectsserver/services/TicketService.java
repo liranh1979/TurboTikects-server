@@ -178,7 +178,12 @@ public class TicketService {
 
     @Transactional
     public TicketDetailDto create(CreateTicketRequestDto dto, Integer actorId) {
-        return createInternal(dto, actorId, true);
+        return createInternal(dto, actorId, true, "manual");
+    }
+
+    @Transactional
+    public TicketDetailDto create(CreateTicketRequestDto dto, Integer actorId, String source) {
+        return createInternal(dto, actorId, true, source);
     }
 
     // ── CLONE ─────────────────────────────────────────────────────────────────
@@ -200,13 +205,13 @@ public class TicketService {
         dto.setLabelIds(labelAssignmentRepo.findByTicketId(sourceId).stream()
                 .map(TicketLabelAssignmentEntity::getLabelId).collect(Collectors.toList()));
 
-        TicketDetailDto created = createInternal(dto, actorId, false);
+        TicketDetailDto created = createInternal(dto, actorId, false, "clone");
         workflowService.cloneWorkflowItems(sourceId, created.getId());
         writeActivityLog(created.getId(), actorId, "TICKET_CLONED", Map.of("sourceTicketId", sourceId));
         return created;
     }
 
-    private TicketDetailDto createInternal(CreateTicketRequestDto dto, Integer actorId, boolean seedWorkflowFromTemplate) {
+    private TicketDetailDto createInternal(CreateTicketRequestDto dto, Integer actorId, boolean seedWorkflowFromTemplate, String source) {
         TicketEntity ticket = new TicketEntity();
         ticket.setTitle(dto.getTitle());
         ticket.setDescription(dto.getDescription());
@@ -236,10 +241,11 @@ public class TicketService {
         }
 
         // Activity log
-        writeActivityLog(ticket.getId(), actorId, "TICKET_CREATED",
-                Map.of("title", ticket.getTitle(),
-                        "status", ticket.getStatus(),
-                        "templateId", ticket.getTemplateId()));
+        writeActivityLog(ticket.getId(), actorId, "TICKET_CREATED", "system",
+                Map.of("title",      ticket.getTitle(),
+                       "status",     ticket.getStatus(),
+                       "templateId", ticket.getTemplateId() != null ? ticket.getTemplateId() : 0,
+                       "source",     source));
 
         // Publish SSE
         TicketSseEventDto event = new TicketSseEventDto();
