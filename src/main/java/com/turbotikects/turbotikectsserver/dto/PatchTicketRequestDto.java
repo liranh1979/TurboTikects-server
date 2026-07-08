@@ -10,6 +10,7 @@ public class PatchTicketRequestDto {
     private String title;
     private String description;
     private String status;
+    private String priority;
     private Integer requestUserId;
     private Integer responsibleUserId;
     private Integer responsibleGroupId;

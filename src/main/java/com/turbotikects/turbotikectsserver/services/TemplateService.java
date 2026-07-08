@@ -197,10 +197,12 @@ public class TemplateService {
         addField(fields, "description",  "rich-text", true, 2, "",    "full",  null);
         addField(fields, "status",       "combobox",  true, 3, "new", "half",
                 List.of("new", "open", "in_progress", "waiting", "resolved", "closed"));
-        addField(fields, "request_user", "text",      true, 4, "",    "half",  null);
-        addField(fields, "responsible",  "text",      true, 5, "",    "half",  null);
-        addField(fields, "attachments",  "attachments", true, 6, "",  "full",  null);
-        addField(fields, "labels",       "labels",      true, 7, "",  "full",  null);
+        addField(fields, "priority",     "combobox",  true, 4, "medium", "half",
+                List.of("critical", "high", "medium", "low"));
+        addField(fields, "request_user", "text",      true, 5, "",    "half",  null);
+        addField(fields, "responsible",  "text",      true, 6, "",    "half",  null);
+        addField(fields, "attachments",  "attachments", true, 7, "",  "full",  null);
+        addField(fields, "labels",       "labels",      true, 8, "",  "full",  null);
 
         Map<String, Object> tab = new LinkedHashMap<>();
         tab.put("tabKey", "main");

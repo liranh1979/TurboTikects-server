@@ -58,7 +58,7 @@ public class TicketService {
     // ── LIST / SEARCH ─────────────────────────────────────────────────────────
 
     public List<TicketListItemDto> getPage(Long cursor, int size, String search,
-                                           String status, Long templateId,
+                                           String status, String priority, Long templateId,
                                            List<Long> labelIds, Integer responsibleUserId,
                                            Integer filterUserId, Integer companyId) {
         List<TicketEntity> tickets;
@@ -67,7 +67,7 @@ public class TicketService {
                     ? ticketRepo.searchPageByUser(search + "*", cursor, size, filterUserId, companyId)
                     : ticketRepo.searchPage(search + "*", cursor, size, companyId);
         } else {
-            tickets = ticketRepo.findPage(cursor, size, status, templateId, responsibleUserId, filterUserId, companyId);
+            tickets = ticketRepo.findPage(cursor, size, status, priority, templateId, responsibleUserId, filterUserId, companyId);
         }
 
         if (tickets.isEmpty()) return Collections.emptyList();
@@ -122,6 +122,7 @@ public class TicketService {
             dto.setId(t.getId());
             dto.setTitle(t.getTitle());
             dto.setStatus(t.getStatus());
+            dto.setPriority(t.getPriority());
             dto.setTemplateId(t.getTemplateId());
             dto.setTemplateVersionId(t.getTemplateVersionId());
             dto.setRequestUserId(t.getRequestUserId());
@@ -197,6 +198,7 @@ public class TicketService {
         dto.setTitle(overrideTitle != null && !overrideTitle.isBlank() ? overrideTitle : source.getTitle());
         dto.setDescription(source.getDescription());
         dto.setStatus("new");
+        dto.setPriority(source.getPriority());
         dto.setTemplateId(source.getTemplateId());
         dto.setTemplateVersionId(source.getTemplateVersionId());
         dto.setResponsibleUserId(source.getResponsibleUserId());
@@ -216,6 +218,7 @@ public class TicketService {
         ticket.setTitle(dto.getTitle());
         ticket.setDescription(dto.getDescription());
         ticket.setStatus(dto.getStatus() != null ? dto.getStatus() : "new");
+        ticket.setPriority(dto.getPriority() != null ? dto.getPriority() : "medium");
         ticket.setTemplateId(dto.getTemplateId());
         ticket.setTemplateVersionId(dto.getTemplateVersionId());
         Integer reqUserId = dto.getRequestUserId() != null ? dto.getRequestUserId() : actorId;
@@ -244,6 +247,7 @@ public class TicketService {
         writeActivityLog(ticket.getId(), actorId, "TICKET_CREATED", "system",
                 Map.of("title",      ticket.getTitle(),
                        "status",     ticket.getStatus(),
+                       "priority",   ticket.getPriority(),
                        "templateId", ticket.getTemplateId() != null ? ticket.getTemplateId() : 0,
                        "source",     source));
 
@@ -313,6 +317,10 @@ public class TicketService {
         if (dto.getDescription() != null && !dto.getDescription().equals(ticket.getDescription())) {
             changes.put("description", Map.of("from", nullSafe(ticket.getDescription()), "to", dto.getDescription()));
             ticket.setDescription(dto.getDescription());
+        }
+        if (dto.getPriority() != null && !dto.getPriority().equals(ticket.getPriority())) {
+            changes.put("priority", Map.of("from", ticket.getPriority(), "to", dto.getPriority()));
+            ticket.setPriority(dto.getPriority());
         }
         if (dto.getStatus() != null && !dto.getStatus().equals(ticket.getStatus())) {
             changes.put("status", Map.of("from", ticket.getStatus(), "to", dto.getStatus()));
@@ -726,6 +734,7 @@ public class TicketService {
         dto.setTitle(ticket.getTitle());
         dto.setDescription(ticket.getDescription());
         dto.setStatus(ticket.getStatus());
+        dto.setPriority(ticket.getPriority());
         dto.setTemplateId(ticket.getTemplateId());
         dto.setTemplateVersionId(ticket.getTemplateVersionId());
         dto.setRequestUserId(ticket.getRequestUserId());

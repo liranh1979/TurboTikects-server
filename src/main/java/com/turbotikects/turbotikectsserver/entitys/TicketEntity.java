@@ -26,6 +26,9 @@ public class TicketEntity {
     @Column(nullable = false, length = 32)
     private String status;
 
+    @Column(nullable = false, length = 16)
+    private String priority;
+
     @Column(name = "template_id", nullable = false)
     private Long templateId;
 

@@ -51,6 +51,7 @@ public class TicketController {
             @RequestParam(defaultValue = "25") int size,
             @RequestParam(required = false) String search,
             @RequestParam(required = false) String status,
+            @RequestParam(required = false) String priority,
             @RequestParam(required = false) Long templateId,
             @RequestParam(name = "labels", required = false) List<Long> labelIds,
             @RequestParam(required = false) Integer responsibleUserId,
@@ -66,7 +67,7 @@ public class TicketController {
         boolean isCompanyScoped = companyId != null;
         Integer filterUserId = (isManager || isCompanyScoped) ? null
                 : (caller != null ? caller.getUserId().intValue() : null);
-        return ticketService.getPage(cursor, size, search, status, templateId, labelIds, responsibleUserId, filterUserId, companyId);
+        return ticketService.getPage(cursor, size, search, status, priority, templateId, labelIds, responsibleUserId, filterUserId, companyId);
     }
 
     // ── GET BY ID ─────────────────────────────────────────────────────────────

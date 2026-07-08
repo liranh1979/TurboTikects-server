@@ -11,6 +11,7 @@ public class TicketListItemDto {
     private Long id;
     private String title;
     private String status;
+    private String priority;
     private Long templateId;
     private Long templateVersionId;
     private String templateName;

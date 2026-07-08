@@ -10,6 +10,7 @@ public class CreateTicketRequestDto {
     private String title;
     private String description;
     private String status;
+    private String priority;
     private Long templateId;
     private Long templateVersionId;
     private Integer requestUserId;

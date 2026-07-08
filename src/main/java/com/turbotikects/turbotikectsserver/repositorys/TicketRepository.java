@@ -20,13 +20,14 @@ public interface TicketRepository extends JpaRepository<TicketEntity, Long>, Jpa
             LEFT JOIN users u ON u.red_id = t.request_user_id
             WHERE (:cursor IS NULL OR t.id < :cursor)
               AND (:status IS NULL OR t.status = :status)
+              AND (:priority IS NULL OR t.priority = :priority)
               AND (:templateId IS NULL OR t.template_id = :templateId)
               AND (:responsibleUserId IS NULL OR t.responsible_user_id = :responsibleUserId)
               AND (:filterUserId IS NULL OR t.request_user_id = :filterUserId)
               AND (:companyId IS NULL OR t.company_id = :companyId OR u.company_id = :companyId)
             ORDER BY t.id DESC LIMIT :size
             """, nativeQuery = true)
-    List<TicketEntity> findPage(@Param("cursor") Long cursor, @Param("size") int size, @Param("status") String status, @Param("templateId") Long templateId, @Param("responsibleUserId") Integer responsibleUserId, @Param("filterUserId") Integer filterUserId, @Param("companyId") Integer companyId);
+    List<TicketEntity> findPage(@Param("cursor") Long cursor, @Param("size") int size, @Param("status") String status, @Param("priority") String priority, @Param("templateId") Long templateId, @Param("responsibleUserId") Integer responsibleUserId, @Param("filterUserId") Integer filterUserId, @Param("companyId") Integer companyId);
 
     @Query(value = """
             SELECT t.* FROM tickets t

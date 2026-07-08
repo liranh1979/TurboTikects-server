@@ -113,6 +113,8 @@ public class AccelerationRuleController {
         // 9 hardcoded system fields
         fields.add(new AvailableConditionFieldDto("status", "Status", "combobox", false,
                 List.of("new", "open", "in_progress", "waiting", "resolved", "closed")));
+        fields.add(new AvailableConditionFieldDto("priority", "Priority", "combobox", false,
+                List.of("critical", "high", "medium", "low")));
         fields.add(new AvailableConditionFieldDto("title", "Title", "text", false, null));
         fields.add(new AvailableConditionFieldDto("acceleration", "Acceleration", "number", false, null));
         fields.add(new AvailableConditionFieldDto("createdAt", "Created At", "date", false, null));
@@ -273,6 +275,7 @@ public class AccelerationRuleController {
         Map<String, Object> snap = new LinkedHashMap<>();
         snap.put("acceleration", ticket.getAcceleration());
         snap.put("status", ticket.getStatus());
+        snap.put("priority", ticket.getPriority());
         snap.put("responsibleUserId", ticket.getResponsibleUserId());
         snap.put("responsibleGroupId", ticket.getResponsibleGroupId());
         return snap;
