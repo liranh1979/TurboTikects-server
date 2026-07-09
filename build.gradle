@@ -56,6 +56,9 @@ dependencies {
 
     implementation 'org.springframework.ldap:spring-ldap-core'
 
+    // BCrypt password hashing (BCryptPasswordEncoder only — no Spring Security filter chain/autoconfig)
+    implementation 'org.springframework.security:spring-security-crypto'
+
     // Email: JavaMail for IMAP/SMTP; Jsoup for HTML parsing + signature stripping
     implementation 'org.springframework.boot:spring-boot-starter-mail'
     implementation 'org.jsoup:jsoup:1.17.2'

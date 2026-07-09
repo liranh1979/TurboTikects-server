@@ -33,7 +33,7 @@ public class AdminSeeder implements ApplicationRunner {
                 .filter(s -> !s.isBlank())
                 .orElse(username);
 
-        String hash = HashUtils.sha1(username + "_" + password);
+        String hash = HashUtils.bcrypt(password);
 
         userRepository.findByUsername(username).ifPresentOrElse(existing -> {
             existing.setPassword(hash);

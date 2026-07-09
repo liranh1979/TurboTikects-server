@@ -87,9 +87,8 @@ public class UserService {
                         .anyMatch(cfg -> azureService.authenticateUser(upn, password, cfg));
                 if (!ok) throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Invalid credentials");
             } else {
-                // Local user: SHA-1 check
-                String hash = HashUtils.sha1(username + "_" + password);
-                if (!hash.equals(user.getPassword()))
+                // Local user: BCrypt check
+                if (!HashUtils.matchesBcrypt(password, user.getPassword()))
                     throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Invalid credentials");
             }
             return buildUserDto(user);

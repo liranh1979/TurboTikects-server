@@ -75,7 +75,7 @@ public class UserManagementService {
         user.setDisplayName(dto.getDisplayName() != null ? dto.getDisplayName().trim() : dto.getUsername());
         user.setSuperAdmin(false);
         user.setMetadata(new HashMap<>());
-        user.setPassword(HashUtils.sha1(username + "_" + dto.getPassword()));
+        user.setPassword(HashUtils.bcrypt(dto.getPassword()));
         user.setEmail((dto.getEmail() != null && !dto.getEmail().isBlank()) ? dto.getEmail().trim().toLowerCase() : null);
         user.setCompanyId(callerCompanyId);
         user.setDeleted(false);
@@ -105,8 +105,10 @@ public class UserManagementService {
         if (dto.getDisplayName() != null && !dto.getDisplayName().isBlank())
             user.setDisplayName(dto.getDisplayName().trim());
 
-        if (dto.getPassword() != null && !dto.getPassword().isBlank())
-            user.setPassword(HashUtils.sha1(user.getUsername() + "_" + dto.getPassword()));
+        // Only local accounts have a real, checkable password — LDAP/Azure users authenticate
+        // via bind/ROPC, so their real password isn't known to this system at all.
+        if (dto.getPassword() != null && !dto.getPassword().isBlank() && user.getSourceType() == 0)
+            user.setPassword(HashUtils.bcrypt(dto.getPassword()));
 
         if (dto.getEmail() != null)
             user.setEmail(dto.getEmail().isBlank() ? null : dto.getEmail().trim().toLowerCase());

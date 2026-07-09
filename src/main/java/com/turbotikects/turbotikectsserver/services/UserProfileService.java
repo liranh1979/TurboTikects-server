@@ -115,12 +115,11 @@ public class UserProfileService {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "New password is required");
         }
 
-        String currentHash = HashUtils.sha1(user.getUsername() + "_" + dto.getCurrentPassword());
-        if (!currentHash.equals(user.getPassword())) {
+        if (!HashUtils.matchesBcrypt(dto.getCurrentPassword(), user.getPassword())) {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "Current password is incorrect");
         }
 
-        user.setPassword(HashUtils.sha1(user.getUsername() + "_" + dto.getNewPassword()));
+        user.setPassword(HashUtils.bcrypt(dto.getNewPassword()));
         userRepository.save(user);
     }
 

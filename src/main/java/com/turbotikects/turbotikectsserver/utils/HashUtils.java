@@ -1,10 +1,22 @@
 package com.turbotikects.turbotikectsserver.utils;
 
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.Formatter;
 
 public class HashUtils {
+
+    private static final BCryptPasswordEncoder BCRYPT = new BCryptPasswordEncoder(12);
+
+    public static String bcrypt(String rawPassword) {
+        return BCRYPT.encode(rawPassword);
+    }
+
+    public static boolean matchesBcrypt(String rawPassword, String hash) {
+        return BCRYPT.matches(rawPassword, hash);
+    }
 
     public static String sha1(String input) {
         try {
