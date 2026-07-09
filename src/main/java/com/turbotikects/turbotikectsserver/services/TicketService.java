@@ -386,6 +386,16 @@ public class TicketService {
                     log.warn("[Workflow] Cascade error for ticket {}: {}", wfTicketId, e.getMessage(), e);
                 }
             }).start();
+
+            // CSAT survey: sent once, the first time a ticket reaches a resolved status
+            final TicketEntity csatTicket = ticket;
+            new Thread(() -> {
+                try {
+                    csatService.maybeSendSurvey(csatTicket, previousStatus, newStatus);
+                } catch (Exception e) {
+                    log.warn("[Csat] Survey dispatch error for ticket {}: {}", wfTicketId, e.getMessage(), e);
+                }
+            }).start();
         }
 
         // Notifications (async, only when something actually changed)
@@ -585,6 +595,12 @@ public class TicketService {
     @Autowired
     private WorkflowService workflowService;
 
+    @Autowired
+    private CsatService csatService;
+
+    @Autowired
+    private TicketCsatRepository csatRepo;
+
     public Map<String, Object> saveAiSolution(Long ticketId, String solution, Integer actorId) {
         if (!ticketRepo.existsById(ticketId)) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Ticket not found");
@@ -749,6 +765,12 @@ public class TicketService {
         dto.setCreatedAt(ticket.getCreatedAt());
         dto.setUpdatedAt(ticket.getUpdatedAt());
         dto.setLabels(labelDtos);
+        csatRepo.findByTicketId(ticket.getId())
+                .filter(c -> c.getRespondedAt() != null)
+                .ifPresent(c -> {
+                    dto.setCsatScore(c.getScore());
+                    dto.setCsatComment(c.getComment());
+                });
         return dto;
     }
 

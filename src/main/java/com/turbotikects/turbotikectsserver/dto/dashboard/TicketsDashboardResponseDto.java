@@ -9,4 +9,5 @@ public class TicketsDashboardResponseDto {
     private DashboardSeriesDto tickets;
     private DashboardSeriesDto actionItems;
     private DashboardAiReportDto aiReport;
+    private CsatDashboardResponseDto csat;
 }

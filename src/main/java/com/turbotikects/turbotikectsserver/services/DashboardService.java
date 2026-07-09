@@ -27,16 +27,19 @@ public class DashboardService {
     private final WorkflowItemRepository workflowItemRepository;
     private final DashboardReportCacheRepository cacheRepository;
     private final AiSettingsService aiSettingsService;
+    private final CsatDashboardService csatDashboardService;
     private final ObjectMapper mapper = new ObjectMapper();
 
     public DashboardService(TicketRepository ticketRepository,
                              WorkflowItemRepository workflowItemRepository,
                              DashboardReportCacheRepository cacheRepository,
-                             AiSettingsService aiSettingsService) {
+                             AiSettingsService aiSettingsService,
+                             CsatDashboardService csatDashboardService) {
         this.ticketRepository = ticketRepository;
         this.workflowItemRepository = workflowItemRepository;
         this.cacheRepository = cacheRepository;
         this.aiSettingsService = aiSettingsService;
+        this.csatDashboardService = csatDashboardService;
     }
 
     public TicketsDashboardResponseDto getDashboard(Integer companyId) {
@@ -59,6 +62,7 @@ public class DashboardService {
         response.setTickets(ticketSeries);
         response.setActionItems(actionItemSeries);
         response.setAiReport(aiReport);
+        response.setCsat(csatDashboardService.getDashboard(companyId));
         return response;
     }
 

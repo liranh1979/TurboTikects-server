@@ -26,4 +26,6 @@ public class TicketDetailDto {
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
     private int version;
+    private Integer csatScore;
+    private String csatComment;
 }
