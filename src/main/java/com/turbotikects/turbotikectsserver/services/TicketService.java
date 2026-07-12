@@ -30,6 +30,7 @@ public class TicketService {
     private final FieldDefinitionsRepository fieldDefRepo;
     private final HoursOfOperationRepository hooRepo;
     private final TimerCalculationService timerCalc;
+    private final TicketRelationshipRepository relationshipRepo;
 
     public TicketService(TicketRepository ticketRepo,
                          TicketLabelAssignmentRepository labelAssignmentRepo,
@@ -41,7 +42,8 @@ public class TicketService {
                          TicketSseService sseService,
                          FieldDefinitionsRepository fieldDefRepo,
                          HoursOfOperationRepository hooRepo,
-                         TimerCalculationService timerCalc) {
+                         TimerCalculationService timerCalc,
+                         TicketRelationshipRepository relationshipRepo) {
         this.ticketRepo = ticketRepo;
         this.labelAssignmentRepo = labelAssignmentRepo;
         this.labelRepo = labelRepo;
@@ -53,6 +55,7 @@ public class TicketService {
         this.fieldDefRepo = fieldDefRepo;
         this.hooRepo = hooRepo;
         this.timerCalc = timerCalc;
+        this.relationshipRepo = relationshipRepo;
     }
 
     // ── LIST / SEARCH ─────────────────────────────────────────────────────────
@@ -555,11 +558,13 @@ public class TicketService {
         queueRepo.save(item);
     }
 
-    private void writeActivityLog(Long ticketId, Integer actorId, String operation, Map<String, Object> changes) {
+    // Package-private (not private) so TicketRelationshipService, in the same package,
+    // can write activity-log entries without duplicating this helper.
+    void writeActivityLog(Long ticketId, Integer actorId, String operation, Map<String, Object> changes) {
         writeActivityLog(ticketId, actorId, operation, "manual", changes);
     }
 
-    private void writeActivityLog(Long ticketId, Integer actorId, String operation,
+    void writeActivityLog(Long ticketId, Integer actorId, String operation,
                                    String activityType, Map<String, Object> changes) {
         TicketActivityLogEntity logEntry = new TicketActivityLogEntity();
         logEntry.setTicketId(ticketId);
@@ -771,6 +776,30 @@ public class TicketService {
                     dto.setCsatScore(c.getScore());
                     dto.setCsatComment(c.getComment());
                 });
+
+        List<TicketRelationshipEntity> relationships = relationshipRepo.findBySourceTicketIdOrderByCreatedAtDesc(ticket.getId());
+        if (relationships.isEmpty()) {
+            dto.setRelationships(Collections.emptyList());
+        } else {
+            Set<Long> otherTicketIds = relationships.stream()
+                    .map(TicketRelationshipEntity::getTargetTicketId).collect(Collectors.toSet());
+            Map<Long, TicketEntity> otherTicketsById = new HashMap<>();
+            ticketRepo.findAllById(otherTicketIds).forEach(t -> otherTicketsById.put(t.getId(), t));
+            dto.setRelationships(relationships.stream()
+                    .map(r -> toRelationshipDto(r, otherTicketsById.get(r.getTargetTicketId())))
+                    .collect(Collectors.toList()));
+        }
+        return dto;
+    }
+
+    private TicketRelationshipDto toRelationshipDto(TicketRelationshipEntity r, TicketEntity other) {
+        TicketRelationshipDto dto = new TicketRelationshipDto();
+        dto.setId(r.getId());
+        dto.setRelationshipType(r.getRelationshipType());
+        dto.setOtherTicketId(r.getTargetTicketId());
+        dto.setOtherTicketTitle(other != null ? other.getTitle() : null);
+        dto.setOtherTicketStatus(other != null ? other.getStatus() : null);
+        dto.setCreatedAt(r.getCreatedAt());
         return dto;
     }
 

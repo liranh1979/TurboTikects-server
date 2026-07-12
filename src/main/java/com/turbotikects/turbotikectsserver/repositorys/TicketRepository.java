@@ -50,6 +50,22 @@ public interface TicketRepository extends JpaRepository<TicketEntity, Long>, Jpa
             """, nativeQuery = true)
     List<TicketEntity> searchPageByUser(@Param("q") String q, @Param("cursor") Long cursor, @Param("size") int size, @Param("filterUserId") Integer filterUserId, @Param("companyId") Integer companyId);
 
+    // LIKE-based (not FULLTEXT) so short/numeric queries like "1020" still match — the
+    // MATCH...AGAINST index used by searchPage has a 3-char minimum token size and only
+    // covers title/description text, not the ticket id itself. Used by the relationship
+    // Link/Merge ticket-picker combobox, which needs fast partial/numeric-id matches.
+    @Query(value = """
+            SELECT t.* FROM tickets t
+            LEFT JOIN users u ON u.red_id = t.request_user_id
+            WHERE t.id <> :excludeId
+              AND (t.id = :idMatch OR t.title LIKE CONCAT('%', :q, '%'))
+              AND (:companyId IS NULL OR t.company_id = :companyId OR u.company_id = :companyId)
+            ORDER BY t.id DESC LIMIT :limit
+            """, nativeQuery = true)
+    List<TicketEntity> searchForPicker(@Param("q") String q, @Param("idMatch") Long idMatch,
+                                        @Param("excludeId") Long excludeId, @Param("companyId") Integer companyId,
+                                        @Param("limit") int limit);
+
     @Modifying
     @Transactional
     @Query("DELETE FROM TicketEntity t WHERE t.id IN :ids")

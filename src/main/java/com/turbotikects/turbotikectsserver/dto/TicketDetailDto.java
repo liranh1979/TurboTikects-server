@@ -28,4 +28,5 @@ public class TicketDetailDto {
     private int version;
     private Integer csatScore;
     private String csatComment;
+    private List<TicketRelationshipDto> relationships;
 }
