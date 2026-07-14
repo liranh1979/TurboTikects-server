@@ -10,4 +10,5 @@ public class TicketsDashboardResponseDto {
     private DashboardSeriesDto actionItems;
     private DashboardAiReportDto aiReport;
     private CsatDashboardResponseDto csat;
+    private SlaDashboardResponseDto sla;
 }

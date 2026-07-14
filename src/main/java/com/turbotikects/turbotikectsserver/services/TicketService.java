@@ -236,6 +236,11 @@ public class TicketService {
         ticket.setVersion(1);
         ticket = ticketRepo.save(ticket);
 
+        // Start SLA clocks against whatever policy matches this ticket's priority/template — a
+        // no-op if no policy matches. Distinct from the generic timer field: never manually
+        // entered, started exactly once here and never restamped by later unrelated edits.
+        slaTimerService.startClocks(ticket);
+
         // Save label assignments
         if (dto.getLabelIds() != null && !dto.getLabelIds().isEmpty()) {
             for (Long labelId : dto.getLabelIds()) {
@@ -368,6 +373,12 @@ public class TicketService {
             writeActivityLog(ticket.getId(), actorId, "FIELD_UPDATE", "field_change", changes);
         }
 
+        // First-response SLA: any edit made by someone other than the ticket's own requester
+        // counts as the agent having engaged with it. No-op if already recorded or no SLA policy.
+        if (!changes.isEmpty() && actorId != null && !actorId.equals(ticket.getRequestUserId())) {
+            slaTimerService.recordFirstResponse(ticket.getId());
+        }
+
         // Publish SSE
         TicketSseEventDto event = new TicketSseEventDto();
         event.setType("TICKET_UPDATED");
@@ -382,6 +393,20 @@ public class TicketService {
         if (dto.getStatus() != null && !dto.getStatus().equals(previousStatus)) {
             final Long wfTicketId = ticket.getId();
             final String newStatus = ticket.getStatus();
+
+            // SLA pause/resume/resolution — synchronous (fast, pure DB work, no external calls)
+            // so it stays atomic with the status change itself rather than racing it.
+            if (SlaTimerService.isWaitingStatus(previousStatus) && !SlaTimerService.isWaitingStatus(newStatus)) {
+                slaTimerService.resume(wfTicketId, ticket.getCompanyId());
+            } else if (!SlaTimerService.isWaitingStatus(previousStatus) && SlaTimerService.isWaitingStatus(newStatus)) {
+                slaTimerService.pause(wfTicketId);
+            }
+            if (SlaTimerService.isResolvedStatus(newStatus) && !SlaTimerService.isResolvedStatus(previousStatus)) {
+                slaTimerService.recordResolution(wfTicketId);
+            } else if (!SlaTimerService.isResolvedStatus(newStatus) && SlaTimerService.isResolvedStatus(previousStatus)) {
+                slaTimerService.clearResolution(wfTicketId);
+            }
+
             new Thread(() -> {
                 try {
                     workflowService.cascadeTicketStatus(wfTicketId, newStatus);
@@ -606,6 +631,15 @@ public class TicketService {
     @Autowired
     private TicketCsatRepository csatRepo;
 
+    @Autowired
+    private SlaTimerService slaTimerService;
+
+    @Autowired
+    private SlaPolicyRepository slaPolicyRepo;
+
+    @Autowired
+    private TicketSlaStateRepository ticketSlaStateRepo;
+
     public Map<String, Object> saveAiSolution(Long ticketId, String solution, Integer actorId) {
         if (!ticketRepo.existsById(ticketId)) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Ticket not found");
@@ -789,7 +823,65 @@ public class TicketService {
                     .map(r -> toRelationshipDto(r, otherTicketsById.get(r.getTargetTicketId())))
                     .collect(Collectors.toList()));
         }
+
+        ticketSlaStateRepo.findByTicketId(ticket.getId())
+                .ifPresent(state -> dto.setSlaState(toSlaStateDto(ticket, state)));
+
         return dto;
+    }
+
+    /**
+     * Computes "% of SLA time used" for display without needing to separately track
+     * paused-business-time-equivalents: the clock's target datetime is always kept correct as of
+     * "now" by SlaTimerService (recomputed on every resume), so remaining business minutes is
+     * simply the business-hours-aware walk from the reference point to that target, and elapsed %
+     * falls out of remaining vs. the policy's fixed total — no need to reconstruct history.
+     * While paused, the reference point is frozen at pausedAt instead of now, so the displayed
+     * percentage doesn't silently creep forward from real time passing during the pause.
+     */
+    private SlaStateDto toSlaStateDto(TicketEntity ticket, TicketSlaStateEntity state) {
+        SlaStateDto dto = new SlaStateDto();
+        dto.setSlaPolicyId(state.getSlaPolicyId());
+        dto.setFirstResponseTargetAt(state.getFirstResponseTargetAt());
+        dto.setFirstResponseAt(state.getFirstResponseAt());
+        dto.setFirstResponseBreached(state.isFirstResponseBreached());
+        dto.setResolutionTargetAt(state.getResolutionTargetAt());
+        dto.setResolutionAt(state.getResolutionAt());
+        dto.setResolutionBreached(state.isResolutionBreached());
+        dto.setPausedAt(state.getPausedAt());
+        dto.setAiBreachRiskScore(state.getAiBreachRiskScore());
+        dto.setAiRiskReason(state.getAiRiskReason());
+
+        SlaPolicyEntity policy = state.getSlaPolicyId() != null
+                ? slaPolicyRepo.findById(state.getSlaPolicyId()).orElse(null) : null;
+        if (policy == null) return dto;
+        dto.setBusinessHours(policy.isBusinessHours());
+
+        List<HoursOfOperationEntity> schedule = policy.isBusinessHours()
+                ? (ticket.getCompanyId() != null ? hooRepo.findByCompanyId(ticket.getCompanyId()) : hooRepo.findByCompanyIdIsNull())
+                : Collections.emptyList();
+        if (policy.isBusinessHours() && schedule.isEmpty()) schedule = hooRepo.findByCompanyIdIsNull();
+
+        LocalDateTime referenceTime = state.getPausedAt() != null ? state.getPausedAt() : LocalDateTime.now();
+
+        if (state.getFirstResponseAt() == null) {
+            dto.setFirstResponsePercentUsed(
+                    percentUsed(referenceTime, state.getFirstResponseTargetAt(), policy.getFirstResponseMinutes(), schedule));
+        }
+        if (state.getResolutionAt() == null) {
+            dto.setResolutionPercentUsed(
+                    percentUsed(referenceTime, state.getResolutionTargetAt(), policy.getResolutionMinutes(), schedule));
+        }
+        return dto;
+    }
+
+    private Double percentUsed(LocalDateTime referenceTime, LocalDateTime targetAt, int totalMinutes,
+                                List<HoursOfOperationEntity> schedule) {
+        if (targetAt == null || totalMinutes <= 0) return null;
+        double remainingMinutes = referenceTime.isBefore(targetAt)
+                ? timerCalc.calculateElapsedBusinessMinutes(referenceTime, targetAt, schedule) : 0;
+        double pct = 100.0 * (1 - remainingMinutes / totalMinutes);
+        return Math.min(100.0, Math.max(0.0, pct));
     }
 
     private TicketRelationshipDto toRelationshipDto(TicketRelationshipEntity r, TicketEntity other) {

@@ -67,7 +67,7 @@ public class TimerCalculationService {
 
                 if (current.isBefore(slotStart)) current = slotStart; // jump to slot open
 
-                double availableHours = java.time.Duration.between(current, slotEnd).toMinutes() / 60.0;
+                double availableHours = java.time.Duration.between(current, slotEnd).toSeconds() / 3600.0;
                 if (availableHours >= remaining) {
                     return current.plusMinutes(Math.round(remaining * 60));
                 }
@@ -82,6 +82,75 @@ public class TimerCalculationService {
 
         // Fallback: shouldn't happen; return a rough estimate
         return startedAt.plusHours((long) totalHours);
+    }
+
+    /**
+     * Walks the same business-hours slots as {@link #calculateTarget}, but accumulates elapsed
+     * business minutes from {@code startedAt} up to {@code now} instead of stopping at a target
+     * duration. Needed because comparing raw wall-clock timestamps (e.g. {@code now - startedAt})
+     * against a business-hours-computed target is wrong whenever the elapsed window spans
+     * non-business time (nights/weekends) — it would report a percentage-elapsed that doesn't
+     * reflect any actual business time having passed. Used for the SLA countdown's elapsed % and
+     * the escalation ladder's percent-of-SLA-used triggers, so both agree with each other and with
+     * the business-hours-aware target this same class computes.
+     */
+    public double calculateElapsedBusinessMinutes(LocalDateTime startedAt,
+                                                    LocalDateTime now,
+                                                    List<HoursOfOperationEntity> schedule) {
+        if (now.isBefore(startedAt)) return 0;
+
+        if (schedule == null || schedule.isEmpty()) {
+            // No HoO configured: treat all hours as business hours (24×7 policy)
+            return java.time.Duration.between(startedAt, now).toSeconds() / 60.0;
+        }
+
+        LocalDateTime current = startedAt;
+        double elapsedMinutes = 0;
+        int safetyLimit = 365; // never loop more than a year
+
+        while (current.isBefore(now) && safetyLimit-- > 0) {
+            int dayOfWeek = current.getDayOfWeek().getValue() % 7; // SUN=7%7=0, MON=1, ..., SAT=6
+
+            HoursOfOperationEntity day = null;
+            for (HoursOfOperationEntity h : schedule) {
+                if (h.getDayOfWeek() == dayOfWeek) { day = h; break; }
+            }
+
+            if (day == null || !day.isOpen()) {
+                current = LocalDate.from(current).plusDays(1).atStartOfDay();
+                continue;
+            }
+
+            List<long[]> slots = parseSlotsForDay(day);
+            if (slots.isEmpty()) {
+                current = LocalDate.from(current).plusDays(1).atStartOfDay();
+                continue;
+            }
+
+            for (long[] slot : slots) {
+                LocalDateTime slotStart = LocalDate.from(current).atTime(LocalTime.ofSecondOfDay(slot[0]));
+                LocalDateTime slotEnd   = LocalDate.from(current).atTime(LocalTime.ofSecondOfDay(slot[1]));
+
+                if (current.isAfter(slotEnd) || current.isEqual(slotEnd)) continue; // already past this slot
+                if (current.isBefore(slotStart)) current = slotStart; // jump to slot open (gap before open is unpaid)
+
+                if (now.isBefore(slotEnd)) {
+                    // "now" falls inside this slot — count up to now and stop
+                    if (now.isAfter(current)) {
+                        elapsedMinutes += java.time.Duration.between(current, now).toSeconds() / 60.0;
+                    }
+                    return elapsedMinutes;
+                }
+
+                // whole slot has already elapsed
+                elapsedMinutes += java.time.Duration.between(current, slotEnd).toSeconds() / 60.0;
+                current = slotEnd;
+            }
+
+            current = LocalDate.from(current).plusDays(1).atStartOfDay();
+        }
+
+        return elapsedMinutes;
     }
 
     /** Converts an HoO entity's slot strings to seconds-of-day pairs. */
