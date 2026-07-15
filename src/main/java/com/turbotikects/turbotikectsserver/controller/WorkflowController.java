@@ -1,8 +1,10 @@
 package com.turbotikects.turbotikectsserver.controller;
 
+import com.turbotikects.turbotikectsserver.dto.ApprovalDecisionRequestDto;
 import com.turbotikects.turbotikectsserver.dto.PatchWorkflowItemDto;
 import com.turbotikects.turbotikectsserver.dto.UserDto;
 import com.turbotikects.turbotikectsserver.dto.WorkflowItemDto;
+import com.turbotikects.turbotikectsserver.services.ApprovalService;
 import com.turbotikects.turbotikectsserver.services.WorkflowService;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.web.bind.annotation.*;
@@ -15,9 +17,11 @@ import java.util.Map;
 public class WorkflowController {
 
     private final WorkflowService workflowService;
+    private final ApprovalService approvalService;
 
-    public WorkflowController(WorkflowService workflowService) {
+    public WorkflowController(WorkflowService workflowService, ApprovalService approvalService) {
         this.workflowService = workflowService;
+        this.approvalService = approvalService;
     }
 
     /** All workflow items for a ticket (admin/manager view). */
@@ -47,6 +51,25 @@ public class WorkflowController {
                                            @RequestBody Map<String, String> body,
                                            HttpServletRequest request) {
         return workflowService.patchItemStatus(id, body.get("status"), currentUserId(request));
+    }
+
+    /**
+     * Approver (in-app path): resolves the item's current pending approval level. The one-click
+     * email token flow (FEAT-06 Phase 2) will call the same ApprovalService.recordDecision from a
+     * separate public, no-auth controller — this one requires a session, for an approver acting
+     * from inside the app instead of an email link.
+     */
+    @PostMapping("/workflow/items/{id}/approval-decision")
+    public void recordApprovalDecision(@PathVariable Long id,
+                                        @RequestBody ApprovalDecisionRequestDto dto,
+                                        HttpServletRequest request) {
+        approvalService.recordDecision(id, dto.getDecision(), dto.getReason(), currentUserId(request));
+    }
+
+    /** Full level-by-level decision history for an approval item — used by Phase 3's chain-progress UI. */
+    @GetMapping("/workflow/items/{id}/approval-decisions")
+    public List<com.turbotikects.turbotikectsserver.entitys.WorkflowApprovalDecisionEntity> getApprovalDecisions(@PathVariable Long id) {
+        return approvalService.getDecisions(id);
     }
 
     private Integer currentUserId(HttpServletRequest request) {

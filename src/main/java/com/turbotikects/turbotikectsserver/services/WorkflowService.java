@@ -14,6 +14,7 @@ import com.turbotikects.turbotikectsserver.repositorys.WorkflowItemRepository;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -33,6 +34,9 @@ public class WorkflowService {
     private final AdminInboxService adminInboxService;
     private final NotificationService notificationService;
     private final TicketRepository ticketRepo;
+    private final ApprovalService approvalService;
+    private final ExternalApiActionExecutor externalApiActionExecutor;
+    private final McpActionExecutor mcpActionExecutor;
 
     @Value("${app.frontend.url:http://localhost:5173}")
     private String frontendUrl;
@@ -43,7 +47,18 @@ public class WorkflowService {
                            GroupMemberRepository groupMemberRepo,
                            @Autowired AdminInboxService adminInboxService,
                            @Autowired NotificationService notificationService,
-                           @Autowired TicketRepository ticketRepo) {
+                           @Autowired TicketRepository ticketRepo,
+                           // @Lazy breaks the WorkflowService <-> ApprovalService circular dependency
+                           // (ApprovalService needs WorkflowService.activateChildren when a decision
+                           // resolves) — same pattern already used for AuthInterceptor <-> UserService
+                           // elsewhere in this codebase.
+                           @Lazy ApprovalService approvalService,
+                           // Same @Lazy fix, same reason: ExternalApiActionExecutor calls back into
+                           // WorkflowService.onItemCompleted when its call sequence finishes.
+                           @Lazy ExternalApiActionExecutor externalApiActionExecutor,
+                           // Same @Lazy fix, same reason: McpActionExecutor calls back into
+                           // WorkflowService.onItemCompleted when its call sequence finishes.
+                           @Lazy McpActionExecutor mcpActionExecutor) {
         this.workflowItemRepo = workflowItemRepo;
         this.versionRepo = versionRepo;
         this.userRepo = userRepo;
@@ -51,6 +66,9 @@ public class WorkflowService {
         this.adminInboxService = adminInboxService;
         this.notificationService = notificationService;
         this.ticketRepo = ticketRepo;
+        this.approvalService = approvalService;
+        this.externalApiActionExecutor = externalApiActionExecutor;
+        this.mcpActionExecutor = mcpActionExecutor;
     }
 
     // ── SEED ─────────────────────────────────────────────────────────────────
@@ -88,6 +106,15 @@ public class WorkflowService {
             if (node.get("defaultAssigneeGroupId") != null) {
                 item.setAssignedGroupId(((Number) node.get("defaultAssigneeGroupId")).intValue());
             }
+            // type/typeConfig/activationCondition were previously silently dropped here — every
+            // item seeded as a plain 'task' regardless of what the Designer configured. Fixed so
+            // approval/external_api/mcp_tool nodes actually carry their config onto the ticket.
+            Object typeObj = node.get("type");
+            if (typeObj instanceof String s && !s.isBlank()) item.setType(s);
+            Object typeConfigObj = node.get("typeConfig");
+            if (typeConfigObj instanceof Map) item.setTypeConfig((Map<String, Object>) typeConfigObj);
+            Object activationConditionObj = node.get("activationCondition");
+            if (activationConditionObj instanceof String s && !s.isBlank()) item.setActivationCondition(s);
             item = workflowItemRepo.save(item);
             nodeIdToItem.put(nodeId, item);
         }
@@ -129,6 +156,9 @@ public class WorkflowService {
             copy.setTemplateNodeId(src.getTemplateNodeId());
             copy.setTitle(src.getTitle());
             copy.setStatus(src.getStatus());
+            copy.setType(src.getType());
+            copy.setTypeConfig(src.getTypeConfig() != null ? new LinkedHashMap<>(src.getTypeConfig()) : null);
+            copy.setActivationCondition(src.getActivationCondition());
             copy.setAssignedUserId(src.getAssignedUserId());
             copy.setAssignedGroupId(src.getAssignedGroupId());
             copy.setFieldValues(src.getFieldValues() != null ? new LinkedHashMap<>(src.getFieldValues()) : null);
@@ -163,31 +193,25 @@ public class WorkflowService {
         List<WorkflowItemEntity> items = workflowItemRepo.findByTicketIdOrderByDisplayOrder(ticketId);
         if (items.isEmpty()) return;
 
+        List<WorkflowItemEntity> toActivate = new ArrayList<>();
         List<WorkflowItemEntity> toSave = new ArrayList<>();
-        List<WorkflowItemEntity> toNotify = new ArrayList<>();
 
         if ("open".equals(newStatus)) {
             for (WorkflowItemEntity item : items) {
                 if (item.getParentItemId() == null && "pending".equals(item.getStatus())) {
-                    item.setStatus("in_progress");
-                    toSave.add(item);
-                    toNotify.add(item);
+                    toActivate.add(item);
                 }
             }
             // Resume items paused by a previous suspend/close
             for (WorkflowItemEntity item : items) {
                 if ("suspended".equals(item.getStatus()) || "canceled".equals(item.getStatus())) {
-                    item.setStatus("in_progress");
-                    toSave.add(item);
-                    toNotify.add(item);
+                    toActivate.add(item);
                 }
             }
         } else if ("new".equals(newStatus) || "in_progress".equals(newStatus)) {
             for (WorkflowItemEntity item : items) {
                 if ("suspended".equals(item.getStatus()) || "canceled".equals(item.getStatus())) {
-                    item.setStatus("in_progress");
-                    toSave.add(item);
-                    toNotify.add(item);
+                    toActivate.add(item);
                 }
             }
         } else if ("closed".equals(newStatus) || "resolved".equals(newStatus)) {
@@ -208,10 +232,35 @@ public class WorkflowService {
 
         if (!toSave.isEmpty()) {
             workflowItemRepo.saveAll(toSave);
-            log.info("[Workflow] Cascaded ticket {} status={} → updated {} items", ticketId, newStatus, toSave.size());
         }
+        for (WorkflowItemEntity item : toActivate) {
+            activateItem(item, ticketId);
+        }
+        if (!toActivate.isEmpty() || !toSave.isEmpty()) {
+            log.info("[Workflow] Cascaded ticket {} status={} → activated {}, updated {} items",
+                    ticketId, newStatus, toActivate.size(), toSave.size());
+        }
+    }
 
-        for (WorkflowItemEntity item : toNotify) {
+    /**
+     * Transitions an item to in_progress (no-op if it isn't currently pending/suspended/canceled)
+     * and dispatches by type: 'approval' items get their decision chain started (or resumed —
+     * ApprovalService.activateApproval is idempotent) instead of the generic notification every
+     * other type gets. The single choke point for "an item becomes active," called from both
+     * cascadeTicketStatus (ticket-level activation) and activateChildren (parent-completion
+     * activation) so approval items get correctly initialized from either path.
+     */
+    @Transactional
+    public void activateItem(WorkflowItemEntity item, Long ticketId) {
+        item.setStatus("in_progress");
+        workflowItemRepo.save(item);
+        if ("approval".equals(item.getType())) {
+            approvalService.activateApproval(item);
+        } else if ("external_api".equals(item.getType())) {
+            externalApiActionExecutor.execute(item);
+        } else if ("mcp_tool".equals(item.getType())) {
+            mcpActionExecutor.execute(item);
+        } else {
             notifyAssigneeAsync(item, ticketId);
         }
     }
@@ -219,19 +268,34 @@ public class WorkflowService {
     // ── ITEM COMPLETION ───────────────────────────────────────────────────────
 
     /**
-     * Called when a workflow item is marked done. Activates any pending children
-     * and notifies their assignees.
+     * Called when a plain (non-approval) workflow item is marked done. Activates any pending
+     * children and notifies their assignees. Equivalent to {@link #activateChildren} with a null
+     * outcome — only children with no activationCondition (the vast majority; today's only case)
+     * activate from a generic completion.
      */
     @Transactional
     public void onItemCompleted(Long completedItemId, Long ticketId) {
-        List<WorkflowItemEntity> children = workflowItemRepo.findByParentItemId(completedItemId);
+        activateChildren(completedItemId, ticketId, null);
+    }
+
+    /**
+     * Shared by {@link #onItemCompleted} (outcome=null, plain task completion) and
+     * {@link ApprovalService#recordDecision} (outcome='approved'/'rejected'), which is why this
+     * exists as its own method rather than being inlined into onItemCompleted: a child with no
+     * activationCondition always activates (today's only case for plain task items); a child with
+     * one only activates when it matches the parent's actual outcome, which is how FEAT-06's
+     * branching diagram (approved vs. rejected leading to different children) gets expressed on top
+     * of the existing flat parent/child tree.
+     */
+    @Transactional
+    public void activateChildren(Long parentItemId, Long ticketId, String outcome) {
+        List<WorkflowItemEntity> children = workflowItemRepo.findByParentItemId(parentItemId);
         for (WorkflowItemEntity child : children) {
-            if ("pending".equals(child.getStatus())) {
-                child.setStatus("in_progress");
-                workflowItemRepo.save(child);
-                notifyAssigneeAsync(child, ticketId);
-                log.info("[Workflow] Activated child item {} after parent {} completed", child.getId(), completedItemId);
-            }
+            if (!"pending".equals(child.getStatus())) continue;
+            String condition = child.getActivationCondition();
+            if (condition != null && !condition.equals(outcome)) continue;
+            activateItem(child, ticketId);
+            log.info("[Workflow] Activated child item {} after parent {} completed (outcome={})", child.getId(), parentItemId, outcome);
         }
     }
 
@@ -248,10 +312,11 @@ public class WorkflowService {
         // Items directly assigned to the user
         List<WorkflowItemEntity> items = new ArrayList<>(workflowItemRepo.findByAssignedUserId(userId));
 
+        List<Integer> groupIds = List.of();
         // Items assigned to any group the user belongs to
         List<GroupMemberEntity> memberships = groupMemberRepo.findByUserId(userId.longValue());
         if (!memberships.isEmpty()) {
-            List<Integer> groupIds = memberships.stream()
+            groupIds = memberships.stream()
                     .map(m -> m.getGroupId().intValue())
                     .collect(Collectors.toList());
             List<WorkflowItemEntity> groupItems = workflowItemRepo.findByAssignedGroupIdIn(groupIds);
@@ -259,6 +324,16 @@ public class WorkflowService {
             Set<Long> seen = items.stream().map(WorkflowItemEntity::getId).collect(Collectors.toSet());
             for (WorkflowItemEntity gi : groupItems) {
                 if (seen.add(gi.getId())) items.add(gi);
+            }
+        }
+
+        // Approval items pending on this user (directly or via group) — never populate
+        // assignedUserId/assignedGroupId, so they're invisible to the two lookups above.
+        List<Long> pendingApprovalIds = approvalService.getPendingApprovalItemIds(userId, groupIds);
+        if (!pendingApprovalIds.isEmpty()) {
+            Set<Long> seen = items.stream().map(WorkflowItemEntity::getId).collect(Collectors.toSet());
+            for (WorkflowItemEntity ai : workflowItemRepo.findAllById(pendingApprovalIds)) {
+                if (seen.add(ai.getId())) items.add(ai);
             }
         }
 
@@ -272,6 +347,15 @@ public class WorkflowService {
     public WorkflowItemDto patchItem(Long id, PatchWorkflowItemDto dto, Integer actorId) {
         WorkflowItemEntity item = workflowItemRepo.findById(id)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+
+        // Approval items resolve only via ApprovalService.recordDecision (POST .../approval-decision)
+        // — the chain/branching state (which level is pending, approved vs. rejected children) lives
+        // in workflow_approval_decisions, not just this row's status, so a direct status PATCH here
+        // would silently desync from it rather than actually recording a decision.
+        if ("approval".equals(item.getType()) && dto.getStatus() != null && !dto.getStatus().equals(item.getStatus())) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Approval items are resolved via POST /workflow/items/{id}/approval-decision, not a direct status change");
+        }
 
         String oldStatus = item.getStatus();
 
@@ -296,6 +380,11 @@ public class WorkflowService {
         }
         WorkflowItemEntity item = workflowItemRepo.findById(id)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+
+        if ("approval".equals(item.getType()) && !status.equals(item.getStatus())) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "Approval items are resolved via POST /workflow/items/{id}/approval-decision, not a direct status change");
+        }
 
         String oldStatus = item.getStatus();
         item.setStatus(status);
@@ -406,12 +495,16 @@ public class WorkflowService {
         dto.setParentItemId(e.getParentItemId());
         dto.setTitle(e.getTitle());
         dto.setStatus(e.getStatus());
+        dto.setType(e.getType());
+        dto.setTypeConfig(e.getTypeConfig());
+        dto.setActivationCondition(e.getActivationCondition());
         dto.setAssignedUserId(e.getAssignedUserId());
         if (e.getAssignedUserId() != null) {
             dto.setAssignedUserDisplayName(displayNames.get(e.getAssignedUserId().longValue()));
         }
         dto.setAssignedGroupId(e.getAssignedGroupId());
         dto.setFieldValues(e.getFieldValues());
+        dto.setLastError(e.getLastError());
         dto.setDisplayOrder(e.getDisplayOrder());
         dto.setCreatedAt(e.getCreatedAt());
         dto.setUpdatedAt(e.getUpdatedAt());

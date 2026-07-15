@@ -30,6 +30,7 @@ repositories {
 dependencyManagement {
     imports {
         mavenBom "org.infinispan:infinispan-bom:15.0.0.Final"
+        mavenBom "io.modelcontextprotocol.sdk:mcp-bom:2.0.0"
     }
 }
 
@@ -69,6 +70,21 @@ dependencies {
 
     // Groovy: runtime script compilation and execution for acceleration rules
     implementation 'org.apache.groovy:groovy:4.0.21'
+
+    // JSONPath extraction for the external_api/mcp_tool workflow action items (FEAT-06 Phase 4+) —
+    // admin/AI-authored response captures use JSONPath syntax rather than raw Jackson JsonPointer,
+    // since LLMs reliably emit correct JSONPath and it reads more naturally to a non-developer admin.
+    implementation 'com.jayway.jsonpath:json-path:2.9.0'
+
+    // MCP (Model Context Protocol) Java SDK client, for the mcp_tool workflow action item
+    // (FEAT-06 Phase 6). mcp-core + mcp-json-jackson2 explicitly, NOT the "mcp" convenience bundle —
+    // that bundle pulls in mcp-json-jackson3 (Jackson 3, a different root package/artifact than
+    // Spring Boot 3.2.5's Jackson 2 stack), which would ship a second JSON library this app doesn't
+    // otherwise need. This app only ever acts as an MCP *client* (calls out to admin-configured
+    // external MCP servers) — never as an MCP server itself, a deliberate scope decision (see the
+    // FEAT-06 plan's Phase 6 section).
+    implementation 'io.modelcontextprotocol.sdk:mcp-core'
+    implementation 'io.modelcontextprotocol.sdk:mcp-json-jackson2'
 
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
 }

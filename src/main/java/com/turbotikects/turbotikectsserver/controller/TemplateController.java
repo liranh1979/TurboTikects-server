@@ -16,9 +16,12 @@ import java.util.Map;
 public class TemplateController {
 
     private final TemplateService templateService;
+    private final com.turbotikects.turbotikectsserver.services.WorkflowActionTestService workflowActionTestService;
 
-    public TemplateController(TemplateService templateService) {
+    public TemplateController(TemplateService templateService,
+                               com.turbotikects.turbotikectsserver.services.WorkflowActionTestService workflowActionTestService) {
         this.templateService = templateService;
+        this.workflowActionTestService = workflowActionTestService;
     }
 
     // Open to any authenticated user — needed to render ticket forms for end users
@@ -63,5 +66,33 @@ public class TemplateController {
                                          @RequestBody AiSuggestLayoutRequestDto dto)
             throws URISyntaxException, IOException, InterruptedException {
         return templateService.aiSuggestLayout(id, dto);
+    }
+
+    /**
+     * FEAT-06 Phase 5 — AI Workflow Builder. Not tied to a specific template (no {id} needed to
+     * draft one) since generation only needs the pasted docs + which ticket fields are available;
+     * the admin picks which template/node to save the reviewed draft into afterward via the normal
+     * PUT /templates/{id} save path (Phase 4's editor + this template's own secret handling).
+     */
+    @RequirePermission("MANAGE_FIELDS")
+    @PostMapping("/ai-suggest-workflow-action")
+    public Map<String, Object> aiSuggestWorkflowAction(@RequestBody AiWorkflowActionDraftRequestDto dto)
+            throws URISyntaxException, IOException, InterruptedException {
+        return templateService.aiSuggestWorkflowAction(dto);
+    }
+
+    @RequirePermission("MANAGE_FIELDS")
+    @PostMapping("/ai-suggest-mcp-action")
+    public Map<String, Object> aiSuggestMcpAction(@RequestBody com.turbotikects.turbotikectsserver.dto.AiMcpActionDraftRequestDto dto)
+            throws URISyntaxException, IOException, InterruptedException {
+        return templateService.aiSuggestMcpAction(dto);
+    }
+
+    /** FEAT-06 Phase 7 — "test this call now": runs a Designer draft (external_api or mcp_tool) live, no persistence. */
+    @RequirePermission("MANAGE_FIELDS")
+    @PostMapping("/test-workflow-action")
+    public com.turbotikects.turbotikectsserver.dto.WorkflowActionTestResult testWorkflowAction(
+            @RequestBody com.turbotikects.turbotikectsserver.dto.WorkflowActionTestRequestDto dto) {
+        return workflowActionTestService.test(dto);
     }
 }
