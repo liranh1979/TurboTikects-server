@@ -25,6 +25,13 @@ import java.util.stream.Collectors;
 @Service
 public class SystemSettingsService {
 
+    // Known Tickets Dashboard section keys, in their built-in default order. Kept here (not in
+    // TicketsDashboard.tsx alone) so the backend can validate/repair a saved order server-side —
+    // an admin's saved list is filtered to only these, and any of these missing from it are
+    // appended at the end, so a future new section never silently vanishes from existing installs.
+    private static final List<String> DEFAULT_DASHBOARD_SECTION_ORDER =
+            List.of("ai_report", "charts", "csat", "sla");
+
     private final SystemSettingsRepository settingsRepo;
     private final DynamicTranslationsRepository translationsRepo;
     private final FileStorageService fileStorage;
@@ -56,6 +63,30 @@ public class SystemSettingsService {
         return (val == null || val <= 0) ? 0 : val;
     }
 
+    /**
+     * Not exposed on the public {@link SystemSettingsDto} — the public GET is fetched pre-login
+     * for logo/language, and this setting only matters to the authenticated dashboard view, which
+     * reads it via {@code TicketsDashboardResponseDto.sectionOrder} instead (populated by
+     * DashboardService).
+     */
+    public List<String> getDashboardSectionOrder() {
+        List<String> saved = getEntity().getDashboardSectionOrder();
+        return sanitizeSectionOrder(saved);
+    }
+
+    /** Drops unknown keys, and appends any known key missing from the saved list (see field javadoc). */
+    private List<String> sanitizeSectionOrder(List<String> saved) {
+        if (saved == null || saved.isEmpty()) return DEFAULT_DASHBOARD_SECTION_ORDER;
+        List<String> cleaned = new ArrayList<>();
+        for (String key : saved) {
+            if (DEFAULT_DASHBOARD_SECTION_ORDER.contains(key) && !cleaned.contains(key)) cleaned.add(key);
+        }
+        for (String key : DEFAULT_DASHBOARD_SECTION_ORDER) {
+            if (!cleaned.contains(key)) cleaned.add(key);
+        }
+        return cleaned;
+    }
+
     @Transactional
     public SystemSettingsDto updateSettings(UpdateSystemSettingsDto dto) {
         SystemSettingsEntity e = getEntity();
@@ -73,6 +104,9 @@ public class SystemSettingsService {
         }
         if (dto.getAccelerationCronInterval() != null && dto.getAccelerationCronInterval() >= 0) {
             e.setAccelerationCronInterval(dto.getAccelerationCronInterval());
+        }
+        if (dto.getDashboardSectionOrder() != null) {
+            e.setDashboardSectionOrder(sanitizeSectionOrder(dto.getDashboardSectionOrder()));
         }
         return toDto(settingsRepo.save(e));
     }

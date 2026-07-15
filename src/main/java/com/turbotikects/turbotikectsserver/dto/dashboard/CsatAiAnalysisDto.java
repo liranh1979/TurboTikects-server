@@ -12,5 +12,6 @@ public class CsatAiAnalysisDto {
     private String summary;
     private List<CsatImprovementPointDto> improvementPoints;
     private boolean cached;
+    private boolean stale;
     private LocalDateTime generatedAt;
 }

@@ -29,6 +29,7 @@ public class DashboardService {
     private final AiSettingsService aiSettingsService;
     private final CsatDashboardService csatDashboardService;
     private final SlaDashboardService slaDashboardService;
+    private final SystemSettingsService systemSettingsService;
     private final ObjectMapper mapper = new ObjectMapper();
 
     public DashboardService(TicketRepository ticketRepository,
@@ -36,41 +37,53 @@ public class DashboardService {
                              DashboardReportCacheRepository cacheRepository,
                              AiSettingsService aiSettingsService,
                              CsatDashboardService csatDashboardService,
-                             SlaDashboardService slaDashboardService) {
+                             SlaDashboardService slaDashboardService,
+                             SystemSettingsService systemSettingsService) {
         this.ticketRepository = ticketRepository;
         this.workflowItemRepository = workflowItemRepository;
         this.cacheRepository = cacheRepository;
         this.aiSettingsService = aiSettingsService;
         this.csatDashboardService = csatDashboardService;
         this.slaDashboardService = slaDashboardService;
+        this.systemSettingsService = systemSettingsService;
     }
 
+    /**
+     * Always fast — pure DB reads, never an LLM call. The AI report is served from cache (however
+     * stale) rather than generated here; {@link DashboardReportSchedulerService} is what keeps it
+     * fresh in the background. See {@link #getCachedAiReport} / {@link #refreshAiReportIfStale}.
+     */
     public TicketsDashboardResponseDto getDashboard(Integer companyId) {
-        DashboardSeriesDto ticketSeries = buildSeries(
-                ticketRepository.countCreatedByHourSince(LocalDateTime.now().minusHours(24), companyId),
-                ticketRepository.countCreatedByDaySince(LocalDateTime.now().minusDays(7), companyId),
-                ticketRepository.countCreatedByDaySince(LocalDateTime.now().minusDays(30), companyId),
-                ticketRepository.countByStatus(companyId));
-
-        DashboardSeriesDto actionItemSeries = buildSeries(
-                workflowItemRepository.countCreatedByHourSince(LocalDateTime.now().minusHours(24), companyId),
-                workflowItemRepository.countCreatedByDaySince(LocalDateTime.now().minusDays(7), companyId),
-                workflowItemRepository.countCreatedByDaySince(LocalDateTime.now().minusDays(30), companyId),
-                workflowItemRepository.countByStatus(companyId));
-
-        String fingerprint = computeFingerprint(companyId);
-        DashboardAiReportDto aiReport = getOrGenerateAiReport(companyId, fingerprint, ticketSeries, actionItemSeries);
+        DashboardSeriesDto ticketSeries = buildTicketSeries(companyId);
+        DashboardSeriesDto actionItemSeries = buildActionItemSeries(companyId);
 
         TicketsDashboardResponseDto response = new TicketsDashboardResponseDto();
         response.setTickets(ticketSeries);
         response.setActionItems(actionItemSeries);
-        response.setAiReport(aiReport);
+        response.setAiReport(getCachedAiReport(companyId));
         response.setCsat(csatDashboardService.getDashboard(companyId));
         response.setSla(slaDashboardService.getDashboard(companyId));
+        response.setSectionOrder(systemSettingsService.getDashboardSectionOrder());
         return response;
     }
 
     // ── SERIES BUILDING ──────────────────────────────────────────────────────
+
+    private DashboardSeriesDto buildTicketSeries(Integer companyId) {
+        return buildSeries(
+                ticketRepository.countCreatedByHourSince(LocalDateTime.now().minusHours(24), companyId),
+                ticketRepository.countCreatedByDaySince(LocalDateTime.now().minusDays(7), companyId),
+                ticketRepository.countCreatedByDaySince(LocalDateTime.now().minusDays(30), companyId),
+                ticketRepository.countByStatus(companyId));
+    }
+
+    private DashboardSeriesDto buildActionItemSeries(Integer companyId) {
+        return buildSeries(
+                workflowItemRepository.countCreatedByHourSince(LocalDateTime.now().minusHours(24), companyId),
+                workflowItemRepository.countCreatedByDaySince(LocalDateTime.now().minusDays(7), companyId),
+                workflowItemRepository.countCreatedByDaySince(LocalDateTime.now().minusDays(30), companyId),
+                workflowItemRepository.countByStatus(companyId));
+    }
 
     private DashboardSeriesDto buildSeries(List<Object[]> hourlyRows, List<Object[]> weeklyRows,
                                             List<Object[]> monthlyRows, List<Object[]> statusRows) {
@@ -111,19 +124,38 @@ public class DashboardService {
                 + "|w:" + ((Number) workflowRow[0]).longValue() + ":" + workflowRow[1];
     }
 
-    // ── AI REPORT (cached) ────────────────────────────────────────────────────
+    // ── AI REPORT (cache read — no LLM call, ever; called on every dashboard request) ──────────
 
-    private DashboardAiReportDto getOrGenerateAiReport(Integer companyId, String fingerprint,
-                                                          DashboardSeriesDto tickets, DashboardSeriesDto actionItems) {
+    private DashboardAiReportDto getCachedAiReport(Integer companyId) {
+        String fingerprint = computeFingerprint(companyId);
         Optional<DashboardReportCacheEntity> cached = cacheRepository.findByDashboardIdAndCompanyId(DASHBOARD_ID, companyId);
-        if (cached.isPresent() && fingerprint.equals(cached.get().getFingerprint())) {
-            DashboardAiReportDto dto = mapper.convertValue(cached.get().getReportJson(), DashboardAiReportDto.class);
-            dto.setCached(true);
-            dto.setGeneratedAt(cached.get().getGeneratedAt());
-            return dto;
+
+        if (cached.isEmpty()) {
+            DashboardAiReportDto pending = new DashboardAiReportDto();
+            pending.setSummary("AI insights are being generated — check back shortly.");
+            pending.setRecurringProblems(Collections.emptyList());
+            pending.setCached(false);
+            pending.setStale(false);
+            return pending;
         }
 
-        DashboardAiReportDto fresh = callLlmForReport(tickets, actionItems);
+        DashboardAiReportDto dto = mapper.convertValue(cached.get().getReportJson(), DashboardAiReportDto.class);
+        if (dto.getRecurringProblems() == null) dto.setRecurringProblems(Collections.emptyList());
+        dto.setCached(true);
+        dto.setGeneratedAt(cached.get().getGeneratedAt());
+        dto.setStale(!fingerprint.equals(cached.get().getFingerprint()));
+        return dto;
+    }
+
+    // ── AI REPORT (background-only regeneration — never called from the request path) ──────────
+
+    /** Called only by {@link DashboardReportSchedulerService}. Synchronous LLM call — safe here since this never runs on a request thread. */
+    public void refreshAiReportIfStale(Integer companyId) {
+        String fingerprint = computeFingerprint(companyId);
+        Optional<DashboardReportCacheEntity> cached = cacheRepository.findByDashboardIdAndCompanyId(DASHBOARD_ID, companyId);
+        if (cached.isPresent() && fingerprint.equals(cached.get().getFingerprint())) return; // already current
+
+        DashboardAiReportDto fresh = callLlmForReport(buildTicketSeries(companyId), buildActionItemSeries(companyId));
 
         // Snapshot to JSON while cached/generatedAt are still false/null — this service's local
         // ObjectMapper has no JSR310 module, so a non-null LocalDateTime would fail to serialize.
@@ -137,10 +169,6 @@ public class DashboardService {
         entity.setReportJson(snapshot);
         entity.setGeneratedAt(now);
         cacheRepository.save(entity);
-
-        fresh.setCached(false);
-        fresh.setGeneratedAt(now);
-        return fresh;
     }
 
     private DashboardAiReportDto callLlmForReport(DashboardSeriesDto tickets, DashboardSeriesDto actionItems) {

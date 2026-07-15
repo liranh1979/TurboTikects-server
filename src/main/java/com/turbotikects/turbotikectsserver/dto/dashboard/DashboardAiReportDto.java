@@ -12,5 +12,6 @@ public class DashboardAiReportDto {
     private String summary;
     private List<RecurringProblemDto> recurringProblems;
     private boolean cached;
+    private boolean stale;
     private LocalDateTime generatedAt;
 }

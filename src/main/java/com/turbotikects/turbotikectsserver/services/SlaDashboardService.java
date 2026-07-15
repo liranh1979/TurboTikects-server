@@ -38,7 +38,7 @@ public class SlaDashboardService {
         this.aiSettingsService = aiSettingsService;
     }
 
-    public SlaDashboardResponseDto getDashboard(Integer companyId) {
+    private List<SlaPriorityStatDto> computePriorityStats(Integer companyId) {
         List<SlaPriorityStatDto> priorityStats = new ArrayList<>();
         for (Object[] row : stateRepo.breachStatsByPriority(companyId)) {
             SlaPriorityStatDto dto = new SlaPriorityStatDto();
@@ -55,13 +55,14 @@ public class SlaDashboardService {
             priorityStats.add(dto);
         }
         priorityStats.sort(Comparator.comparingInt(s -> priorityRank(s.getPriority())));
+        return priorityStats;
+    }
 
-        String fingerprint = computeFingerprint(companyId);
-        SlaAiInsightDto aiInsight = getOrGenerateAiInsight(companyId, fingerprint, priorityStats);
-
+    /** Always fast — pure DB reads, never an LLM call. See {@link #refreshAiInsightIfStale}. */
+    public SlaDashboardResponseDto getDashboard(Integer companyId) {
         SlaDashboardResponseDto response = new SlaDashboardResponseDto();
-        response.setPriorityStats(priorityStats);
-        response.setAiInsight(aiInsight);
+        response.setPriorityStats(computePriorityStats(companyId));
+        response.setAiInsight(getCachedAiInsight(companyId));
         return response;
     }
 
@@ -86,17 +87,34 @@ public class SlaDashboardService {
         return "s:" + cnt + ":" + lastUpdate;
     }
 
-    private SlaAiInsightDto getOrGenerateAiInsight(Integer companyId, String fingerprint,
-                                                     List<SlaPriorityStatDto> priorityStats) {
+    private SlaAiInsightDto getCachedAiInsight(Integer companyId) {
+        String fingerprint = computeFingerprint(companyId);
         Optional<DashboardReportCacheEntity> cached = cacheRepository.findByDashboardIdAndCompanyId(DASHBOARD_ID, companyId);
-        if (cached.isPresent() && fingerprint.equals(cached.get().getFingerprint())) {
-            SlaAiInsightDto dto = mapper.convertValue(cached.get().getReportJson(), SlaAiInsightDto.class);
-            dto.setCached(true);
-            dto.setGeneratedAt(cached.get().getGeneratedAt());
-            return dto;
+
+        if (cached.isEmpty()) {
+            SlaAiInsightDto pending = new SlaAiInsightDto();
+            pending.setSummary("AI insight is being generated — check back shortly.");
+            pending.setFindings(Collections.emptyList());
+            pending.setCached(false);
+            pending.setStale(false);
+            return pending;
         }
 
-        SlaAiInsightDto fresh = callLlmForInsight(priorityStats);
+        SlaAiInsightDto dto = mapper.convertValue(cached.get().getReportJson(), SlaAiInsightDto.class);
+        if (dto.getFindings() == null) dto.setFindings(Collections.emptyList());
+        dto.setCached(true);
+        dto.setGeneratedAt(cached.get().getGeneratedAt());
+        dto.setStale(!fingerprint.equals(cached.get().getFingerprint()));
+        return dto;
+    }
+
+    /** Called only by {@link DashboardReportSchedulerService}. Synchronous LLM call — safe here since this never runs on a request thread. */
+    public void refreshAiInsightIfStale(Integer companyId) {
+        String fingerprint = computeFingerprint(companyId);
+        Optional<DashboardReportCacheEntity> cached = cacheRepository.findByDashboardIdAndCompanyId(DASHBOARD_ID, companyId);
+        if (cached.isPresent() && fingerprint.equals(cached.get().getFingerprint())) return; // already current
+
+        SlaAiInsightDto fresh = callLlmForInsight(computePriorityStats(companyId));
 
         // Snapshot to JSON while cached/generatedAt are still false/null — this service's local
         // ObjectMapper has no JSR310 module, so a non-null LocalDateTime would fail to serialize.
@@ -110,10 +128,6 @@ public class SlaDashboardService {
         entity.setReportJson(snapshot);
         entity.setGeneratedAt(now);
         cacheRepository.save(entity);
-
-        fresh.setCached(false);
-        fresh.setGeneratedAt(now);
-        return fresh;
     }
 
     private SlaAiInsightDto callLlmForInsight(List<SlaPriorityStatDto> priorityStats) {

@@ -2,8 +2,11 @@ package com.turbotikects.turbotikectsserver.entitys;
 
 import jakarta.persistence.*;
 import lombok.Data;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.type.SqlTypes;
 
 import java.time.LocalDateTime;
+import java.util.List;
 
 @Entity
 @Table(name = "system_settings")
@@ -27,6 +30,12 @@ public class SystemSettingsEntity {
 
     @Column(name = "acceleration_cron_interval", nullable = false)
     private Integer accelerationCronInterval = 5;
+
+    // Order of the Tickets Dashboard's sections (e.g. ["ai_report","charts","csat","sla"]). Null/empty
+    // means "use the built-in default" — resolved in SystemSettingsService, not seeded here.
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(name = "dashboard_section_order", columnDefinition = "json")
+    private List<String> dashboardSectionOrder;
 
     @Column(name = "updated_at")
     private LocalDateTime updatedAt;

@@ -12,5 +12,6 @@ public class SlaAiInsightDto {
     private String summary;
     private List<SlaFindingDto> findings;
     private boolean cached;
+    private boolean stale;
     private LocalDateTime generatedAt;
 }

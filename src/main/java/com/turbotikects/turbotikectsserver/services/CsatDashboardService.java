@@ -32,7 +32,10 @@ public class CsatDashboardService {
         this.aiSettingsService = aiSettingsService;
     }
 
-    public CsatDashboardResponseDto getDashboard(Integer companyId) {
+    private record CsatAggregates(double avgScore, double responseRate, double lowScorePercent,
+                                    Map<Integer, Long> distribution) {}
+
+    private CsatAggregates computeAggregates(Integer companyId) {
         LocalDateTime since30d = LocalDateTime.now().minusDays(30);
 
         Map<Integer, Long> distribution = toDistributionMap(csatRepo.scoreDistributionSince(since30d, companyId));
@@ -48,6 +51,13 @@ public class CsatDashboardService {
         long responded = rateRow[1] != null ? ((Number) rateRow[1]).longValue() : 0L;
         double responseRate = sent == 0 ? 0.0 : (responded * 100.0) / sent;
 
+        return new CsatAggregates(avgScore, responseRate, lowScorePercent, distribution);
+    }
+
+    /** Always fast — pure DB reads, never an LLM call. See {@link #refreshAiAnalysisIfStale}. */
+    public CsatDashboardResponseDto getDashboard(Integer companyId) {
+        CsatAggregates agg = computeAggregates(companyId);
+
         List<CsatLowScoreTicketDto> lowScoreTickets = new ArrayList<>();
         for (Object[] row : csatRepo.lowScoreTickets(companyId)) {
             CsatLowScoreTicketDto dto = new CsatLowScoreTicketDto();
@@ -59,17 +69,13 @@ public class CsatDashboardService {
             lowScoreTickets.add(dto);
         }
 
-        String fingerprint = computeFingerprint(companyId);
-        CsatAiAnalysisDto aiAnalysis = getOrGenerateAiAnalysis(companyId, fingerprint,
-                avgScore, responseRate, lowScorePercent, distribution, companyId);
-
         CsatDashboardResponseDto response = new CsatDashboardResponseDto();
-        response.setAvgScore(round1(avgScore));
-        response.setResponseRate(round1(responseRate));
-        response.setLowScorePercent(round1(lowScorePercent));
-        response.setDistribution(distribution);
+        response.setAvgScore(round1(agg.avgScore()));
+        response.setResponseRate(round1(agg.responseRate()));
+        response.setLowScorePercent(round1(agg.lowScorePercent()));
+        response.setDistribution(agg.distribution());
         response.setLowScoreTickets(lowScoreTickets);
-        response.setAiAnalysis(aiAnalysis);
+        response.setAiAnalysis(getCachedAiAnalysis(companyId));
         return response;
     }
 
@@ -94,18 +100,35 @@ public class CsatDashboardService {
         return "c:" + cnt + ":" + lastResponse;
     }
 
-    private CsatAiAnalysisDto getOrGenerateAiAnalysis(Integer companyId, String fingerprint, double avgScore,
-                                                        double responseRate, double lowScorePercent,
-                                                        Map<Integer, Long> distribution, Integer scopeCompanyId) {
+    private CsatAiAnalysisDto getCachedAiAnalysis(Integer companyId) {
+        String fingerprint = computeFingerprint(companyId);
         Optional<DashboardReportCacheEntity> cached = cacheRepository.findByDashboardIdAndCompanyId(DASHBOARD_ID, companyId);
-        if (cached.isPresent() && fingerprint.equals(cached.get().getFingerprint())) {
-            CsatAiAnalysisDto dto = mapper.convertValue(cached.get().getReportJson(), CsatAiAnalysisDto.class);
-            dto.setCached(true);
-            dto.setGeneratedAt(cached.get().getGeneratedAt());
-            return dto;
+
+        if (cached.isEmpty()) {
+            CsatAiAnalysisDto pending = new CsatAiAnalysisDto();
+            pending.setSummary("AI analysis is being generated — check back shortly.");
+            pending.setImprovementPoints(Collections.emptyList());
+            pending.setCached(false);
+            pending.setStale(false);
+            return pending;
         }
 
-        CsatAiAnalysisDto fresh = callLlmForAnalysis(avgScore, responseRate, lowScorePercent, distribution, scopeCompanyId);
+        CsatAiAnalysisDto dto = mapper.convertValue(cached.get().getReportJson(), CsatAiAnalysisDto.class);
+        if (dto.getImprovementPoints() == null) dto.setImprovementPoints(Collections.emptyList());
+        dto.setCached(true);
+        dto.setGeneratedAt(cached.get().getGeneratedAt());
+        dto.setStale(!fingerprint.equals(cached.get().getFingerprint()));
+        return dto;
+    }
+
+    /** Called only by {@link DashboardReportSchedulerService}. Synchronous LLM call — safe here since this never runs on a request thread. */
+    public void refreshAiAnalysisIfStale(Integer companyId) {
+        String fingerprint = computeFingerprint(companyId);
+        Optional<DashboardReportCacheEntity> cached = cacheRepository.findByDashboardIdAndCompanyId(DASHBOARD_ID, companyId);
+        if (cached.isPresent() && fingerprint.equals(cached.get().getFingerprint())) return; // already current
+
+        CsatAggregates agg = computeAggregates(companyId);
+        CsatAiAnalysisDto fresh = callLlmForAnalysis(agg.avgScore(), agg.responseRate(), agg.lowScorePercent(), agg.distribution(), companyId);
 
         // Snapshot to JSON while cached/generatedAt are still false/null — this service's local
         // ObjectMapper has no JSR310 module, so a non-null LocalDateTime would fail to serialize.
@@ -119,10 +142,6 @@ public class CsatDashboardService {
         entity.setReportJson(snapshot);
         entity.setGeneratedAt(now);
         cacheRepository.save(entity);
-
-        fresh.setCached(false);
-        fresh.setGeneratedAt(now);
-        return fresh;
     }
 
     private CsatAiAnalysisDto callLlmForAnalysis(double avgScore, double responseRate, double lowScorePercent,
