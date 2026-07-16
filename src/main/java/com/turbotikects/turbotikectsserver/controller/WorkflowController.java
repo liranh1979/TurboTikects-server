@@ -3,6 +3,7 @@ package com.turbotikects.turbotikectsserver.controller;
 import com.turbotikects.turbotikectsserver.dto.ApprovalDecisionRequestDto;
 import com.turbotikects.turbotikectsserver.dto.PatchWorkflowItemDto;
 import com.turbotikects.turbotikectsserver.dto.UserDto;
+import com.turbotikects.turbotikectsserver.dto.WorkflowItemContextDto;
 import com.turbotikects.turbotikectsserver.dto.WorkflowItemDto;
 import com.turbotikects.turbotikectsserver.services.ApprovalService;
 import com.turbotikects.turbotikectsserver.services.WorkflowService;
@@ -37,19 +38,28 @@ public class WorkflowController {
         return workflowService.getItemsForUser(userId);
     }
 
-    /** Admin: update status, assignee, and/or field values on any item. */
+    /**
+     * Update status, assignee, and/or field values on an item — used by admins for any item, and
+     * now also by an assigned end user filling in a Simple action item's own mini-fields
+     * (ActionItemPage.tsx). Guarded by assertCanViewItem — previously any authenticated session
+     * could patch any item at all.
+     */
     @PatchMapping("/workflow/items/{id}")
     public WorkflowItemDto patchItem(@PathVariable Long id,
                                      @RequestBody PatchWorkflowItemDto dto,
                                      HttpServletRequest request) {
+        UserDto caller = currentUser(request);
+        workflowService.assertCanViewItem(id, currentUserId(request), isManager(caller), caller != null && caller.isSuperAdmin());
         return workflowService.patchItem(id, dto, currentUserId(request));
     }
 
-    /** End user: change status only. */
+    /** End user: change status only. Guarded by assertCanViewItem, same reasoning as patchItem above. */
     @PatchMapping("/workflow/items/{id}/status")
     public WorkflowItemDto patchItemStatus(@PathVariable Long id,
                                            @RequestBody Map<String, String> body,
                                            HttpServletRequest request) {
+        UserDto caller = currentUser(request);
+        workflowService.assertCanViewItem(id, currentUserId(request), isManager(caller), caller != null && caller.isSuperAdmin());
         return workflowService.patchItemStatus(id, body.get("status"), currentUserId(request));
     }
 
@@ -66,10 +76,38 @@ public class WorkflowController {
         approvalService.recordDecision(id, dto.getDecision(), dto.getReason(), currentUserId(request));
     }
 
-    /** Full level-by-level decision history for an approval item — used by Phase 3's chain-progress UI. */
+    /**
+     * Full level-by-level decision history for an approval item — used by Phase 3's chain-progress
+     * UI, and by the item-scoped view for a non-requester/non-manager approver. Guarded by
+     * assertCanViewItem — previously any authenticated session could read any item's decisions.
+     */
     @GetMapping("/workflow/items/{id}/approval-decisions")
-    public List<com.turbotikects.turbotikectsserver.entitys.WorkflowApprovalDecisionEntity> getApprovalDecisions(@PathVariable Long id) {
+    public List<com.turbotikects.turbotikectsserver.entitys.WorkflowApprovalDecisionEntity> getApprovalDecisions(
+            @PathVariable Long id, HttpServletRequest request) {
+        UserDto caller = currentUser(request);
+        workflowService.assertCanViewItem(id, currentUserId(request), isManager(caller), caller != null && caller.isSuperAdmin());
         return approvalService.getDecisions(id);
+    }
+
+    /**
+     * Minimal, ticket-detail-free context for a single item — lets a user assigned to just this
+     * item (not the ticket's requester, not a TICKET_MANAGER) see enough to act on it without
+     * being able to load the full ticket via GET /tickets/{id}.
+     */
+    @GetMapping("/workflow/items/{id}/context")
+    public WorkflowItemContextDto getItemContext(@PathVariable Long id, HttpServletRequest request) {
+        UserDto caller = currentUser(request);
+        return workflowService.getItemContext(id, currentUserId(request), isManager(caller), caller != null && caller.isSuperAdmin());
+    }
+
+    private boolean isManager(UserDto caller) {
+        return caller != null && (caller.isSuperAdmin()
+                || (caller.getEffectivePermissions() != null && caller.getEffectivePermissions().contains("TICKET_MANAGER")));
+    }
+
+    private UserDto currentUser(HttpServletRequest request) {
+        Object user = request.getAttribute("currentUser");
+        return user instanceof UserDto dto ? dto : null;
     }
 
     private Integer currentUserId(HttpServletRequest request) {

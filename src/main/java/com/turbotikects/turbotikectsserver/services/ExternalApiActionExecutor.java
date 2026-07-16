@@ -41,10 +41,12 @@ import java.util.regex.Pattern;
  *                       "response": [{"captureName","target"}] } }
  * }
  *
- * "ticketField"/"target" grammar (target only, request mappings always read from the ticket):
- * "title"|"description"|"status"|"priority" resolve to the ticket's actual columns; anything else
- * resolves to ticket.ticketData[key]. A response target prefixed "this." writes into the item's own
- * field_values instead of the ticket (e.g. "this.provisioned_id").
+ * "ticketField"/"target" grammar: "title"|"description"|"status"|"priority" resolve to the ticket's
+ * actual columns; anything else resolves to ticket.ticketData[key]. A "this." prefix (on either a
+ * request-side ticketField or a response target) instead reads/writes the item's own field_values —
+ * e.g. request ticketField "this.laptop_model" pulls a value the admin/assignee already filled in
+ * (or an earlier call in this same sequence captured) via SimpleItemFieldsForm/an earlier response
+ * mapping; response target "this.provisioned_id" writes a fresh one there.
  *
  * Captured values accumulate into one flat vars map across the whole call sequence — a later call's
  * templates can reference an earlier call's capture directly via {{captureName}} (no per-call
@@ -115,7 +117,9 @@ public class ExternalApiActionExecutor {
                 String placeholder = str(reqMap.get("placeholder"));
                 String ticketField = str(reqMap.get("ticketField"));
                 if (placeholder == null || ticketField == null) continue;
-                Object value = readTicketField(syntheticTicket, ticketField);
+                // No WorkflowItemEntity exists in test mode, so a "this." source always reads as empty here —
+                // an accepted limitation of testing against a synthetic ticket with no real item behind it.
+                Object value = resolveInputField(syntheticTicket, null, ticketField);
                 vars.put(placeholder, value != null ? String.valueOf(value) : "");
             }
 
@@ -157,7 +161,7 @@ public class ExternalApiActionExecutor {
                 String placeholder = str(reqMap.get("placeholder"));
                 String ticketField = str(reqMap.get("ticketField"));
                 if (placeholder == null || ticketField == null) continue;
-                Object value = readTicketField(ticket, ticketField);
+                Object value = resolveInputField(ticket, item, ticketField);
                 vars.put(placeholder, value != null ? String.valueOf(value) : "");
             }
 
@@ -311,13 +315,21 @@ public class ExternalApiActionExecutor {
 
     private static final Set<String> TICKET_COLUMN_FIELDS = Set.of("title", "description", "status", "priority");
 
-    private Object readTicketField(TicketEntity ticket, String key) {
-        return switch (key) {
+    private Object resolveInputField(TicketEntity ticket, WorkflowItemEntity item, String key) {
+        if (key.startsWith("this.")) {
+            if (item == null || item.getFieldValues() == null) return null;
+            return item.getFieldValues().get(key.substring("this.".length()));
+        }
+        // "ticket." is optional here for backward compatibility — older saved configs (and the
+        // frontend's existing ticket-field picker) store a bare key like "title" with no prefix at
+        // all; newer AI drafts/pickers may send "ticket.title" for symmetry with the "this." case.
+        String ticketKey = key.startsWith("ticket.") ? key.substring("ticket.".length()) : key;
+        return switch (ticketKey) {
             case "title" -> ticket.getTitle();
             case "description" -> ticket.getDescription();
             case "status" -> ticket.getStatus();
             case "priority" -> ticket.getPriority();
-            default -> ticket.getTicketData() != null ? ticket.getTicketData().get(key) : null;
+            default -> ticket.getTicketData() != null ? ticket.getTicketData().get(ticketKey) : null;
         };
     }
 

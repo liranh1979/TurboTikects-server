@@ -13,4 +13,7 @@ public class AiMcpActionDraftRequestDto {
     // whole advantage of drafting against MCP over the freeform-HTTP-docs external_api case.
     private List<Map<String, Object>> tools;
     private List<String> ticketFieldKeys;
+    // Custom field_definitions rows (entity_type='workflow', from Workflow Fields Manager) — same
+    // purpose as in AiWorkflowActionDraftRequestDto: real keys for "this.<key>" input/output.
+    private List<String> workflowFieldKeys;
 }

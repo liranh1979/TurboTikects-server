@@ -236,6 +236,8 @@ public class TemplateService {
 
         String fieldList = dto.getTicketFieldKeys() == null || dto.getTicketFieldKeys().isEmpty()
                 ? "(none configured)" : String.join(", ", dto.getTicketFieldKeys());
+        String workflowFieldList = dto.getWorkflowFieldKeys() == null || dto.getWorkflowFieldKeys().isEmpty()
+                ? "(none configured)" : String.join(", ", dto.getWorkflowFieldKeys());
 
         LlmStructure system = new LlmStructure();
         system.setRole("system");
@@ -256,8 +258,8 @@ public class TemplateService {
                     }
                   ],
                   "fieldMappings": {
-                    "request": [{"placeholder": "name used in templates above", "ticketField": "one of the available ticket fields"}],
-                    "response": [{"captureName": "must match a name in some call's responseCaptures", "target": "ticket.<field> or this.<key>"}]
+                    "request": [{"placeholder": "name used in templates above", "ticketField": "ticket.<field> or this.<workflow field>"}],
+                    "response": [{"captureName": "must match a name in some call's responseCaptures", "target": "ticket.<field> or this.<workflow field>"}]
                   }
                 }
                 Rules:
@@ -274,11 +276,16 @@ public class TemplateService {
                   responseCaptures[].name, and fieldMappings.response[].captureName.
                 - Only use placeholders in fieldMappings.request that are actually referenced via \
                   {{...}} in a call's urlTemplate/headers/bodyTemplate.
-                - Only use ticketField values from the provided list of available ticket fields.
-                - Every fieldMappings.response[].target MUST start with either "ticket." (writes \
-                  into a ticket field, e.g. "ticket.description") or "this." (writes into this \
-                  action item's own data, e.g. "this.orderId") — never a bare field name like \
-                  "description" with no prefix, it will silently be ignored.
+                - Both fieldMappings.request[].ticketField and fieldMappings.response[].target MUST \
+                  start with either "ticket." (a ticket field — request reads it, response writes it, \
+                  from the provided list of available ticket fields) or "this." (this action item's \
+                  own data — request reads a value already filled in or captured by an earlier call in \
+                  this same sequence, response writes a fresh one, from the provided list of available \
+                  workflow fields) — never a bare field name like "description" with no prefix, it \
+                  will silently be ignored. Only use "this.<key>" keys from the provided workflow \
+                  fields list, and only use them as a request source if the intent implies the value \
+                  is already known (e.g. filled in by a human before this call runs) rather than \
+                  something this same call sequence is expected to produce.
                 - If the docs describe a multi-step flow (e.g. authenticate then call), create \
                   multiple calls in order, with a later call referencing an earlier call's \
                   responseCapture directly as {{captureName}} (no extra namespacing needed).
@@ -289,6 +296,7 @@ public class TemplateService {
         LlmStructure user = new LlmStructure();
         user.setRole("user");
         user.setContent("Available ticket fields: " + fieldList +
+                "\n\nAvailable workflow fields: " + workflowFieldList +
                 "\n\nWhat this action should do: " + (dto.getIntent() == null ? "" : dto.getIntent()) +
                 "\n\nAPI documentation:\n" + dto.getDocumentation());
 
@@ -366,6 +374,8 @@ public class TemplateService {
         }
         String fieldList = dto.getTicketFieldKeys() == null || dto.getTicketFieldKeys().isEmpty()
                 ? "(none configured)" : String.join(", ", dto.getTicketFieldKeys());
+        String workflowFieldList = dto.getWorkflowFieldKeys() == null || dto.getWorkflowFieldKeys().isEmpty()
+                ? "(none configured)" : String.join(", ", dto.getWorkflowFieldKeys());
 
         LlmStructure system = new LlmStructure();
         system.setRole("system");
@@ -380,27 +390,33 @@ public class TemplateService {
                     {
                       "toolName": "must be one of the provided tools' exact name",
                       "argumentMappings": [
-                        {"toolArgument": "must be a property key in that tool's inputSchema.properties", "ticketField": "one of the available ticket fields"}
+                        {"toolArgument": "must be a property key in that tool's inputSchema.properties", "ticketField": "ticket.<field> or this.<workflow field>"}
                       ],
                       "responseCaptures": [{"name": "camelCaseName", "resultPath": "$.text or $.someField"}]
                     }
                   ],
                   "fieldMappings": {
-                    "response": [{"captureName": "must match a name in some call's responseCaptures", "target": "ticket.<field> or this.<key>"}]
+                    "response": [{"captureName": "must match a name in some call's responseCaptures", "target": "ticket.<field> or this.<workflow field>"}]
                   }
                 }
                 Rules:
                 - Only map arguments that appear in the chosen tool's inputSchema.properties; prefer
                   mapping every property listed in that schema's "required" array.
-                - An argumentMapping entry has EITHER "ticketField" (reads from the ticket) OR
-                  "captureName" (reads a value captured by an EARLIER call in this same sequence) —
-                  never both, and captureName may only reference a responseCaptures name from a call
-                  that comes before it in the list.
+                - An argumentMapping entry has EITHER "ticketField" (reads from "ticket.<field>", one
+                  of the available ticket fields, or "this.<workflow field>", one of the available
+                  workflow fields — a value already filled in or captured earlier) OR "captureName"
+                  (reads a value captured by an EARLIER call in this same sequence) — never both, and
+                  captureName may only reference a responseCaptures name from a call that comes before
+                  it in the list.
+                - Only use "this.<key>" as an argument source if the intent implies the value is
+                  already known (filled in by a human, or captured by an earlier call) rather than
+                  something this same call sequence is expected to produce.
                 - responseCaptures[].resultPath is a JSONPath: use "$.text" for a tool that returns
                   plain text, or "$.fieldName" if the tool's outputSchema (if present) suggests
                   structured output.
-                - Every fieldMappings.response[].target MUST start with either "ticket." or "this." —
-                  never a bare field name.
+                - Every fieldMappings.response[].target MUST start with either "ticket." (from the
+                  available ticket fields) or "this." (from the available workflow fields) — never a
+                  bare field name.
                 - If the admin's intent needs more than one tool call in sequence, create multiple
                   calls in order.
                 - Keep it minimal and correct rather than speculative — if no tool clearly matches the
@@ -410,6 +426,7 @@ public class TemplateService {
         LlmStructure user = new LlmStructure();
         user.setRole("user");
         user.setContent("Available ticket fields: " + fieldList +
+                "\n\nAvailable workflow fields: " + workflowFieldList +
                 "\n\nWhat this action should do: " + (dto.getIntent() == null ? "" : dto.getIntent()) +
                 "\n\nServer's real tools (JSON):\n" + toolsJson);
 

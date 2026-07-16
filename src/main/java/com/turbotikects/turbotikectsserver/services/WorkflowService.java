@@ -341,6 +341,76 @@ public class WorkflowService {
         return toDtos(items);
     }
 
+    /**
+     * Minimal, ticket-detail-free context for a single item — lets a user who's assigned to this
+     * item (but not the ticket's requester or a TICKET_MANAGER) see enough to act on it without
+     * exposing the rest of the ticket. See assertCanViewItem for who's allowed.
+     */
+    public com.turbotikects.turbotikectsserver.dto.WorkflowItemContextDto getItemContext(
+            Long itemId, Integer callerId, boolean isManager, boolean isSuperAdmin) {
+        WorkflowItemEntity item = workflowItemRepo.findById(itemId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Workflow item not found"));
+        TicketEntity ticket = ticketRepo.findById(item.getTicketId()).orElse(null);
+
+        assertCanViewItem(item, ticket, callerId, isManager, isSuperAdmin);
+
+        var dto = new com.turbotikects.turbotikectsserver.dto.WorkflowItemContextDto();
+        dto.setItemId(item.getId());
+        dto.setTicketId(item.getTicketId());
+        dto.setTicketTitle(ticket != null ? ticket.getTitle() : null);
+        if (ticket != null && ticket.getRequestUserId() != null) {
+            userRepo.findById(ticket.getRequestUserId().longValue()).ifPresent(requester ->
+                    dto.setRequesterName(requester.getDisplayName() != null ? requester.getDisplayName() : requester.getUsername()));
+        }
+        if (dto.getRequesterName() == null) dto.setRequesterName("Unknown");
+        dto.setItemTitle(item.getTitle());
+        dto.setItemType(item.getType());
+        dto.setItemStatus(item.getStatus());
+        dto.setTypeConfig(item.getTypeConfig());
+        dto.setFieldValues(item.getFieldValues());
+        return dto;
+    }
+
+    /**
+     * Same guard as below, resolved by item id — lets callers (e.g. the approval-decisions
+     * endpoint) check access without having to load the item/ticket themselves first.
+     */
+    public void assertCanViewItem(Long itemId, Integer callerId, boolean isManager, boolean isSuperAdmin) {
+        WorkflowItemEntity item = workflowItemRepo.findById(itemId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Workflow item not found"));
+        TicketEntity ticket = ticketRepo.findById(item.getTicketId()).orElse(null);
+        assertCanViewItem(item, ticket, callerId, isManager, isSuperAdmin);
+    }
+
+    /**
+     * Who may see a single item's own data: the ticket's requester, a TICKET_MANAGER, a super
+     * admin, whoever the item is directly assigned to (user or group), or — for approval items,
+     * whose approver lives in the decision rows rather than assignedUserId/assignedGroupId, same
+     * gap documented on getItemsForUser above — anyone who is/was an approver on any of its levels.
+     * Deliberately reused by both the new item-context endpoint and the existing
+     * approval-decisions endpoint, which had no caller check at all before this.
+     */
+    public void assertCanViewItem(WorkflowItemEntity item, TicketEntity ticket, Integer callerId,
+                                   boolean isManager, boolean isSuperAdmin) {
+        if (isSuperAdmin || isManager) return;
+        if (callerId == null) throw new ResponseStatusException(HttpStatus.FORBIDDEN);
+        if (ticket != null && callerId.equals(ticket.getRequestUserId())) return;
+        if (callerId.equals(item.getAssignedUserId())) return;
+        if (item.getAssignedGroupId() != null
+                && groupMemberRepo.existsByGroupIdAndUserId(item.getAssignedGroupId().longValue(), callerId.longValue())) {
+            return;
+        }
+        if ("approval".equals(item.getType())) {
+            for (var decision : approvalService.getDecisions(item.getId())) {
+                boolean mine = callerId.equals(decision.getApproverUserId());
+                boolean mineViaGroup = decision.getApproverGroupId() != null
+                        && groupMemberRepo.existsByGroupIdAndUserId(decision.getApproverGroupId().longValue(), callerId.longValue());
+                if (mine || mineViaGroup) return;
+            }
+        }
+        throw new ResponseStatusException(HttpStatus.FORBIDDEN);
+    }
+
     // ── PATCH ─────────────────────────────────────────────────────────────────
 
     @Transactional

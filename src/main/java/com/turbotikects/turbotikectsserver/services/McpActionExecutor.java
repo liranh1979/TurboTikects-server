@@ -35,7 +35,9 @@ import java.util.*;
  * Simpler than external_api's shape in one respect: MCP tool arguments are a structured
  * Map&lt;String,Object&gt;, not a string template, so each argumentMapping declares its source
  * directly (a ticket field, or an earlier call's captured value) rather than going through a
- * {{placeholder}} indirection layer. "resultPath" is a JSONPath expression evaluated against
+ * {{placeholder}} indirection layer. A "ticketField" value prefixed "this." reads from the item's
+ * own field_values instead of the ticket (same grammar as ExternalApiActionExecutor). "resultPath"
+ * is a JSONPath expression evaluated against
  * whichever of the tool result's structuredContent / first TextContent-parsed-as-JSON / a
  * {"text": ...} fallback is available — same JSONPath library and captured-value-accumulation
  * model as external_api, for consistency between the two action types.
@@ -100,7 +102,8 @@ public class McpActionExecutor {
             client = mcpClientService.openClient(serverUrl, bearerToken);
             Map<String, Object> vars = new LinkedHashMap<>();
             for (Map<String, Object> call : calls) {
-                runCall(client, call, syntheticTicket, vars, trace);
+                // No WorkflowItemEntity exists in test mode — a "this." source always reads as empty.
+                runCall(client, call, syntheticTicket, null, vars, trace);
             }
             return WorkflowActionTestResult.success(vars, trace);
         } catch (Exception e) {
@@ -144,7 +147,7 @@ public class McpActionExecutor {
 
             Map<String, Object> vars = new LinkedHashMap<>();
             for (Map<String, Object> call : calls) {
-                runCall(client, call, ticket, vars, null);
+                runCall(client, call, ticket, item, vars, null);
             }
 
             boolean ticketChanged = false;
@@ -172,7 +175,7 @@ public class McpActionExecutor {
     }
 
     /** trace is non-null only in {@link #testRun} — appended to for the "test this call now" result panel, ignored (null) during real item execution. */
-    private void runCall(McpSyncClient client, Map<String, Object> call, TicketEntity ticket, Map<String, Object> vars, List<Map<String, Object>> trace) {
+    private void runCall(McpSyncClient client, Map<String, Object> call, TicketEntity ticket, WorkflowItemEntity item, Map<String, Object> vars, List<Map<String, Object>> trace) {
         String toolName = str(call.get("toolName"));
         if (toolName == null || toolName.isBlank()) {
             throw new IllegalArgumentException("A call has no toolName configured");
@@ -195,7 +198,7 @@ public class McpActionExecutor {
                 }
                 arguments.put(toolArgument, vars.get(captureName));
             } else if (ticketField != null) {
-                arguments.put(toolArgument, readTicketField(ticket, ticketField));
+                arguments.put(toolArgument, resolveInputField(ticket, item, ticketField));
             }
         }
 
@@ -279,13 +282,20 @@ public class McpActionExecutor {
 
     private static final Set<String> TICKET_COLUMN_FIELDS = Set.of("title", "description", "status", "priority");
 
-    private Object readTicketField(TicketEntity ticket, String key) {
-        return switch (key) {
+    private Object resolveInputField(TicketEntity ticket, WorkflowItemEntity item, String key) {
+        if (key.startsWith("this.")) {
+            if (item == null || item.getFieldValues() == null) return null;
+            return item.getFieldValues().get(key.substring("this.".length()));
+        }
+        // "ticket." is optional — see ExternalApiActionExecutor.resolveInputField for why (backward
+        // compatibility with older saved configs that store a bare key with no prefix at all).
+        String ticketKey = key.startsWith("ticket.") ? key.substring("ticket.".length()) : key;
+        return switch (ticketKey) {
             case "title" -> ticket.getTitle();
             case "description" -> ticket.getDescription();
             case "status" -> ticket.getStatus();
             case "priority" -> ticket.getPriority();
-            default -> ticket.getTicketData() != null ? ticket.getTicketData().get(key) : null;
+            default -> ticket.getTicketData() != null ? ticket.getTicketData().get(ticketKey) : null;
         };
     }
 
