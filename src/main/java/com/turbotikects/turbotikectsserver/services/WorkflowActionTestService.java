@@ -48,8 +48,11 @@ public class WorkflowActionTestService {
                 ? findSavedNodeTypeConfig(dto.getTemplateId(), dto.getNodeId()) : null;
 
         if ("mcp_tool".equals(dto.getType())) {
-            String bearerToken = resolveMcpBearerToken(typeConfig, savedTypeConfig);
-            return mcpActionExecutor.testRun(typeConfig, bearerToken, sampleFields);
+            Map<String, Object> auth = asMap(typeConfig.get("auth"));
+            String authType = (String) auth.get("type");
+            String headerName = (String) auth.get("headerName");
+            String token = resolveMcpAuthToken(typeConfig, savedTypeConfig);
+            return mcpActionExecutor.testRun(typeConfig, authType, headerName, token, sampleFields);
         }
         if ("external_api".equals(dto.getType())) {
             resolveExternalApiCallAuths(typeConfig, savedTypeConfig);
@@ -97,9 +100,10 @@ public class WorkflowActionTestService {
         }).orElse(null);
     }
 
-    private String resolveMcpBearerToken(Map<String, Object> draftTypeConfig, Map<String, Object> savedTypeConfig) {
+    private String resolveMcpAuthToken(Map<String, Object> draftTypeConfig, Map<String, Object> savedTypeConfig) {
         Map<String, Object> auth = asMap(draftTypeConfig.get("auth"));
-        if (!"bearer".equals(auth.get("type"))) return null;
+        String type = (String) auth.get("type");
+        if (!"bearer".equals(type) && !"api_key".equals(type)) return null;
         if (auth.get("token") instanceof String s && !s.isBlank()) return s;
         if (savedTypeConfig != null) {
             Map<String, Object> savedAuth = asMap(savedTypeConfig.get("auth"));

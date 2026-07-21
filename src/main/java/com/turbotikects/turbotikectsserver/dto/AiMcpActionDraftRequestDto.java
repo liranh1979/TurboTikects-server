@@ -14,6 +14,7 @@ public class AiMcpActionDraftRequestDto {
     private List<Map<String, Object>> tools;
     private List<String> ticketFieldKeys;
     // Custom field_definitions rows (entity_type='workflow', from Workflow Fields Manager) — same
-    // purpose as in AiWorkflowActionDraftRequestDto: real keys for "this.<key>" input/output.
-    private List<String> workflowFieldKeys;
+    // purpose and shape as in AiWorkflowActionDraftRequestDto: real keys (with type) for
+    // "this.<key>" input/output, plus the same missing-field-suggestion mechanism.
+    private List<WorkflowFieldRefDto> workflowFields;
 }

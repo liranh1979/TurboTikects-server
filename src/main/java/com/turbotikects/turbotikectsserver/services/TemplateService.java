@@ -236,8 +236,7 @@ public class TemplateService {
 
         String fieldList = dto.getTicketFieldKeys() == null || dto.getTicketFieldKeys().isEmpty()
                 ? "(none configured)" : String.join(", ", dto.getTicketFieldKeys());
-        String workflowFieldList = dto.getWorkflowFieldKeys() == null || dto.getWorkflowFieldKeys().isEmpty()
-                ? "(none configured)" : String.join(", ", dto.getWorkflowFieldKeys());
+        String workflowFieldList = workflowFieldsJson(dto.getWorkflowFields());
 
         LlmStructure system = new LlmStructure();
         system.setRole("system");
@@ -260,7 +259,10 @@ public class TemplateService {
                   "fieldMappings": {
                     "request": [{"placeholder": "name used in templates above", "ticketField": "ticket.<field> or this.<workflow field>"}],
                     "response": [{"captureName": "must match a name in some call's responseCaptures", "target": "ticket.<field> or this.<workflow field>"}]
-                  }
+                  },
+                  "missingWorkflowFields": [
+                    {"suggestedFieldKey": "snake_case_key", "suggestedLabel": "Human Label", "suggestedFieldType": "text"|"number"|"date"|"checkbox"}
+                  ]
                 }
                 Rules:
                 - NEVER include a real token/username/password value anywhere in your output — the \
@@ -279,13 +281,32 @@ public class TemplateService {
                 - Both fieldMappings.request[].ticketField and fieldMappings.response[].target MUST \
                   start with either "ticket." (a ticket field — request reads it, response writes it, \
                   from the provided list of available ticket fields) or "this." (this action item's \
-                  own data — request reads a value already filled in or captured by an earlier call in \
-                  this same sequence, response writes a fresh one, from the provided list of available \
-                  workflow fields) — never a bare field name like "description" with no prefix, it \
-                  will silently be ignored. Only use "this.<key>" keys from the provided workflow \
-                  fields list, and only use them as a request source if the intent implies the value \
-                  is already known (e.g. filled in by a human before this call runs) rather than \
-                  something this same call sequence is expected to produce.
+                  own data, from the provided list of available workflow fields, each given with its \
+                  "type") — never a bare field name like "description" with no prefix, it will \
+                  silently be ignored.
+                - MANDATORY CHECK for every single "this.<key>" you write, with no exceptions — \
+                  including response captures you're about to store, even though a capture's own \
+                  name might look field-ready as-is: does <key> EXACTLY match a key already in the \
+                  provided workflow fields list, AND is that field's "type" a genuinely good fit for \
+                  what you're reading or writing here? If YES, use that exact key. If NO — including \
+                  when nothing in the list is close, or a name-only match has the wrong type — you \
+                  MUST do BOTH of the following, never just the "this.<key>" reference alone: (1) \
+                  still write "this.<key>" at that location (invent a new snake_case key if needed — \
+                  a captured value's own camelCase/existing name is NOT automatically a valid key, \
+                  convert it), AND (2) add exactly one entry for that same key to the top-level \
+                  "missingWorkflowFields" array. It is a mistake to reference a "this.<key>" that is \
+                  neither in the provided workflow fields list NOR declared in "missingWorkflowFields" \
+                  — every single one must be one or the other, no silent third option. \
+                  "suggestedFieldType" MUST be exactly one of "text", "number", "date", or "checkbox" \
+                  — never anything else (no "combobox", "assignee", etc. — those need configuration \
+                  you can't safely infer).
+                - A "this.<key>" reference used as a request source (fieldMappings.request[].ticketField) \
+                  means a value expected to already be known — filled in by a human, or captured by an \
+                  earlier call in this same sequence — before this call runs; if you invent a new key \
+                  here, it becomes a fillable input the admin can expose on the item afterward. A \
+                  "this.<key>" reference used as a response target (fieldMappings.response[].target) \
+                  means a value this call sequence itself produces and should persist; if you invent a \
+                  new key here, it becomes a place to store that output.
                 - If the docs describe a multi-step flow (e.g. authenticate then call), create \
                   multiple calls in order, with a later call referencing an earlier call's \
                   responseCapture directly as {{captureName}} (no extra namespacing needed).
@@ -304,14 +325,78 @@ public class TemplateService {
         String cleaned = raw.replaceAll("(?s)```[a-zA-Z]*\\n?", "").replace("```", "").trim();
 
         ObjectMapper mapper = new ObjectMapper();
-        Map<String, Object> draft = mapper.readValue(cleaned, new TypeReference<>() {});
-        sanitizeDraft(draft);
+        Map<String, Object> draft;
+        try {
+            draft = mapper.readValue(cleaned, new TypeReference<>() {});
+        } catch (Exception e) {
+            // The model responded conversationally instead of with pure JSON (seen live with a
+            // smaller local model given a large/unfamiliar tool schema) — surface this as a clear
+            // 4xx instead of letting a raw JsonParseException bubble up as an unhandled 500.
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "The AI did not return valid JSON — it may not have understood the request. Try a shorter/clearer intent, or a different AI provider/model.");
+        }
+        sanitizeDraft(draft, existingWorkflowFieldKeys(dto.getWorkflowFields()));
         return draft;
+    }
+
+    /** Serializes the available workflow fields (key + type) as a JSON array for the prompt, mirroring LdapMappingService's systemFieldsJson approach so the AI can reason about type fit, not just name. */
+    private String workflowFieldsJson(List<WorkflowFieldRefDto> workflowFields) {
+        if (workflowFields == null || workflowFields.isEmpty()) return "(none configured)";
+        List<Map<String, String>> asMaps = workflowFields.stream()
+                .map(f -> Map.of("key", f.getKey() == null ? "" : f.getKey(), "type", f.getType() == null ? "text" : f.getType()))
+                .toList();
+        try {
+            return new ObjectMapper().writeValueAsString(asMaps);
+        } catch (Exception e) {
+            return "(none configured)";
+        }
+    }
+
+    private Set<String> existingWorkflowFieldKeys(List<WorkflowFieldRefDto> workflowFields) {
+        if (workflowFields == null) return Set.of();
+        Set<String> keys = new HashSet<>();
+        for (WorkflowFieldRefDto f : workflowFields) {
+            if (f.getKey() != null) keys.add(f.getKey());
+        }
+        return keys;
+    }
+
+    /**
+     * Sanitizes an AI-drafted "missingWorkflowFields" suggestion list in place, deliberately
+     * hardened over LdapMappingService's equivalent (which passes the LLM's suggestedFieldType
+     * straight through with no validation): drops entries with no usable key or that duplicate an
+     * already-existing workflow field, de-dupes repeated suggestions, and whitelists
+     * suggestedFieldType to the same text/number/date/checkbox set SimpleItemFieldsEditor's
+     * RENDERABLE_TYPES already uses for the identical "fillable workflow field" concept — anything
+     * else (or missing) defaults to "text" rather than being trusted.
+     */
+    @SuppressWarnings("unchecked")
+    private List<Map<String, Object>> sanitizeMissingWorkflowFields(Map<String, Object> draft, Set<String> existingKeys) {
+        Set<String> validFieldTypes = Set.of("text", "number", "date", "checkbox");
+        List<Map<String, Object>> missing = new ArrayList<>();
+        Set<String> seenKeys = new HashSet<>();
+        if (draft.get("missingWorkflowFields") instanceof List<?> list) {
+            for (Object o : list) {
+                if (!(o instanceof Map)) continue;
+                Map<String, Object> s = new LinkedHashMap<>((Map<String, Object>) o);
+                String key = s.get("suggestedFieldKey") instanceof String k ? k.trim() : null;
+                if (key == null || key.isBlank()) continue;
+                if (existingKeys.contains(key)) continue;
+                if (!seenKeys.add(key)) continue;
+                if (!(s.get("suggestedFieldType") instanceof String t) || !validFieldTypes.contains(t)) {
+                    s.put("suggestedFieldType", "text");
+                }
+                s.putIfAbsent("suggestedLabel", key);
+                s.put("suggestedFieldKey", key);
+                missing.add(s);
+            }
+        }
+        return missing;
     }
 
     /** Defense in depth: assigns real call ids/order server-side (never trust the LLM to invent stable, unique ones) and strips any secret-shaped key the model might have hallucinated despite being told not to — never let AI-generated output masquerade as a real stored credential. */
     @SuppressWarnings("unchecked")
-    private void sanitizeDraft(Map<String, Object> draft) {
+    private void sanitizeDraft(Map<String, Object> draft, Set<String> existingWorkflowFieldKeys) {
         Set<String> validAuthTypes = Set.of("none", "bearer", "api_key", "basic");
         List<Map<String, Object>> calls = new ArrayList<>();
         if (draft.get("calls") instanceof List<?> list) {
@@ -343,6 +428,8 @@ public class TemplateService {
         fm.putIfAbsent("request", new ArrayList<>());
         fm.putIfAbsent("response", new ArrayList<>());
         draft.put("fieldMappings", fm);
+
+        draft.put("missingWorkflowFields", sanitizeMissingWorkflowFields(draft, existingWorkflowFieldKeys));
     }
 
     /**
@@ -374,8 +461,7 @@ public class TemplateService {
         }
         String fieldList = dto.getTicketFieldKeys() == null || dto.getTicketFieldKeys().isEmpty()
                 ? "(none configured)" : String.join(", ", dto.getTicketFieldKeys());
-        String workflowFieldList = dto.getWorkflowFieldKeys() == null || dto.getWorkflowFieldKeys().isEmpty()
-                ? "(none configured)" : String.join(", ", dto.getWorkflowFieldKeys());
+        String workflowFieldList = workflowFieldsJson(dto.getWorkflowFields());
 
         LlmStructure system = new LlmStructure();
         system.setRole("system");
@@ -397,20 +483,40 @@ public class TemplateService {
                   ],
                   "fieldMappings": {
                     "response": [{"captureName": "must match a name in some call's responseCaptures", "target": "ticket.<field> or this.<workflow field>"}]
-                  }
+                  },
+                  "missingWorkflowFields": [
+                    {"suggestedFieldKey": "snake_case_key", "suggestedLabel": "Human Label", "suggestedFieldType": "text"|"number"|"date"|"checkbox"}
+                  ]
                 }
                 Rules:
                 - Only map arguments that appear in the chosen tool's inputSchema.properties; prefer
                   mapping every property listed in that schema's "required" array.
                 - An argumentMapping entry has EITHER "ticketField" (reads from "ticket.<field>", one
                   of the available ticket fields, or "this.<workflow field>", one of the available
-                  workflow fields — a value already filled in or captured earlier) OR "captureName"
-                  (reads a value captured by an EARLIER call in this same sequence) — never both, and
-                  captureName may only reference a responseCaptures name from a call that comes before
-                  it in the list.
-                - Only use "this.<key>" as an argument source if the intent implies the value is
-                  already known (filled in by a human, or captured by an earlier call) rather than
-                  something this same call sequence is expected to produce.
+                  workflow fields, each given with its "type") OR "captureName" (reads a value captured
+                  by an EARLIER call in this same sequence) — never both, and captureName may only
+                  reference a responseCaptures name from a call that comes before it in the list.
+                - MANDATORY CHECK for every single "this.<key>" you write, with no exceptions —
+                  including response targets whose captureName might already look field-ready as-is:
+                  does <key> EXACTLY match a key already in the provided workflow fields list, AND is
+                  that field's "type" a genuinely good fit for what you're reading or writing here? If
+                  YES, use that exact key. If NO — including when nothing in the list is close, or a
+                  name-only match has the wrong type — you MUST do BOTH of the following, never just
+                  the "this.<key>" reference alone: (1) still write "this.<key>" at that location
+                  (invent a new snake_case key if needed — a captureName's own camelCase/existing
+                  spelling is NOT automatically a valid key, convert it), AND (2) add exactly one
+                  entry for that same key to the top-level "missingWorkflowFields" array. It is a
+                  mistake to reference a "this.<key>" that is neither in the provided workflow fields
+                  list NOR declared in "missingWorkflowFields" — every single one must be one or the
+                  other, no silent third option. "suggestedFieldType" MUST be exactly one of "text",
+                  "number", "date", or "checkbox" — never anything else.
+                - A "this.<key>" reference used as an argument source (argumentMappings[].ticketField)
+                  means a value expected to already be known — filled in by a human, or captured by an
+                  earlier call — before this call runs; if you invent a new key here, it becomes a
+                  fillable input the admin can expose on the item afterward. A "this.<key>" reference
+                  used as a response target (fieldMappings.response[].target) means a value this call
+                  sequence itself produces and should persist; if you invent a new key here, it becomes
+                  a place to store that output.
                 - responseCaptures[].resultPath is a JSONPath: use "$.text" for a tool that returns
                   plain text, or "$.fieldName" if the tool's outputSchema (if present) suggests
                   structured output.
@@ -433,14 +539,23 @@ public class TemplateService {
         String raw = aiSettingsService.sendLlmRequest(aiSettings, List.of(system, user));
         String cleaned = raw.replaceAll("(?s)```[a-zA-Z]*\\n?", "").replace("```", "").trim();
 
-        Map<String, Object> draft = mapper.readValue(cleaned, new TypeReference<>() {});
-        sanitizeMcpDraft(draft);
+        Map<String, Object> draft;
+        try {
+            draft = mapper.readValue(cleaned, new TypeReference<>() {});
+        } catch (Exception e) {
+            // Same defense as aiSuggestWorkflowAction — a large/unfamiliar real tool schema (e.g. a
+            // production MCP server with many complex tools) can make a smaller model respond
+            // conversationally instead of with pure JSON; surface a clear 4xx, not a raw 500.
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "The AI did not return valid JSON — it may not have understood the request or the tool schema was too complex for it. Try a shorter/clearer intent, a smaller set of tools, or a different AI provider/model.");
+        }
+        sanitizeMcpDraft(draft, existingWorkflowFieldKeys(dto.getWorkflowFields()));
         return draft;
     }
 
     /** Defense in depth, mirrors sanitizeDraft: never trusts the LLM for stable/unique call ids/ordering, guarantees calls/fieldMappings.response are always present arrays. mcp_tool calls have no per-call auth to strip (the server connection's single auth lives at the node level, entered by the admin directly — never asked of the LLM at all here). */
     @SuppressWarnings("unchecked")
-    private void sanitizeMcpDraft(Map<String, Object> draft) {
+    private void sanitizeMcpDraft(Map<String, Object> draft, Set<String> existingWorkflowFieldKeys) {
         List<Map<String, Object>> calls = new ArrayList<>();
         if (draft.get("calls") instanceof List<?> list) {
             int order = 0;
@@ -460,6 +575,8 @@ public class TemplateService {
                 ? new LinkedHashMap<>((Map<String, Object>) draft.get("fieldMappings")) : new LinkedHashMap<>();
         fm.putIfAbsent("response", new ArrayList<>());
         draft.put("fieldMappings", fm);
+
+        draft.put("missingWorkflowFields", sanitizeMissingWorkflowFields(draft, existingWorkflowFieldKeys));
     }
 
     private Map<String, Object> buildDefaultLayout() {

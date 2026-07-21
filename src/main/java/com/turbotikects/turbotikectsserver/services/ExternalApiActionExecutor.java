@@ -2,8 +2,10 @@ package com.turbotikects.turbotikectsserver.services;
 
 import com.jayway.jsonpath.JsonPath;
 import com.turbotikects.turbotikectsserver.dto.WorkflowActionTestResult;
+import com.turbotikects.turbotikectsserver.entitys.TicketActivityLogEntity;
 import com.turbotikects.turbotikectsserver.entitys.TicketEntity;
 import com.turbotikects.turbotikectsserver.entitys.WorkflowItemEntity;
+import com.turbotikects.turbotikectsserver.repositorys.TicketActivityLogRepository;
 import com.turbotikects.turbotikectsserver.repositorys.TicketRepository;
 import com.turbotikects.turbotikectsserver.repositorys.WorkflowItemRepository;
 import com.turbotikects.turbotikectsserver.utils.AesEncryptionUtils;
@@ -64,6 +66,7 @@ public class ExternalApiActionExecutor {
 
     private final WorkflowItemRepository itemRepo;
     private final TicketRepository ticketRepo;
+    private final TicketActivityLogRepository activityLogRepo;
     private final AesEncryptionUtils aes;
     private final AdminInboxService adminInboxService;
     private final WorkflowService workflowService;
@@ -72,10 +75,12 @@ public class ExternalApiActionExecutor {
     // (WorkflowService.activateItem dispatches INTO this class, this class calls back into
     // WorkflowService.onItemCompleted when the sequence finishes).
     public ExternalApiActionExecutor(WorkflowItemRepository itemRepo, TicketRepository ticketRepo,
+                                      TicketActivityLogRepository activityLogRepo,
                                       AesEncryptionUtils aes, AdminInboxService adminInboxService,
                                       @Lazy WorkflowService workflowService) {
         this.itemRepo = itemRepo;
         this.ticketRepo = ticketRepo;
+        this.activityLogRepo = activityLogRepo;
         this.aes = aes;
         this.adminInboxService = adminInboxService;
         this.workflowService = workflowService;
@@ -125,7 +130,7 @@ public class ExternalApiActionExecutor {
 
             HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(REQUEST_TIMEOUT_SECONDS)).build();
             for (Map<String, Object> call : calls) {
-                runCall(client, call, vars, trace);
+                runCall(client, call, vars, trace, null);
             }
             return WorkflowActionTestResult.success(new LinkedHashMap<>(vars), trace);
         } catch (Exception e) {
@@ -169,21 +174,55 @@ public class ExternalApiActionExecutor {
                     .connectTimeout(Duration.ofSeconds(REQUEST_TIMEOUT_SECONDS))
                     .build();
 
+            // See McpActionExecutor.runSequence's identical warnings mechanism for why this exists:
+            // a call can fully succeed while its response capture jsonPath matches nothing, which
+            // previously only ever logged server-side — silently leaving a "done" item with no
+            // field actually updated and zero visible indication anything was wrong.
+            List<String> warnings = new ArrayList<>();
+
             for (Map<String, Object> call : calls) {
-                runCall(client, call, vars, null);
+                runCall(client, call, vars, null, warnings);
             }
 
+            // A real bug found live: "ticket" (loaded above, before the potentially multi-second
+            // HTTP call sequence) can be stale by this point — this item's own activation is
+            // commonly triggered by the SAME request that just changed the ticket's status (see
+            // WorkflowService.cascadeTicketStatus, spawned from TicketService.patch() on a
+            // background thread BEFORE that request's transaction commits). Writing back the
+            // entity loaded above would silently clobber that concurrent status change back to its
+            // old value (Hibernate's merge() on a detached entity does a full-column UPDATE, not
+            // just the touched fields, and TicketEntity has no real @Version optimistic lock to
+            // catch this). Re-fetching immediately before the write closes that window in practice.
+            TicketEntity freshTicket = ticketRepo.findById(item.getTicketId()).orElse(ticket);
+
             boolean ticketChanged = false;
+            Map<String, Object> changes = new LinkedHashMap<>();
             for (Map<String, Object> respMap : listOf(fieldMappings.get("response"))) {
                 String captureName = str(respMap.get("captureName"));
                 String target = str(respMap.get("target"));
-                if (captureName == null || target == null || !vars.containsKey(captureName)) continue;
-                if (applyTarget(item, ticket, target, vars.get(captureName))) ticketChanged = true;
+                if (captureName == null || target == null) continue;
+                if (!vars.containsKey(captureName)) {
+                    warnings.add("Response mapping to '" + target + "' was skipped — capture '" + captureName + "' was never populated");
+                    continue;
+                }
+                String newValue = vars.get(captureName);
+                Object oldValue = target.startsWith("ticket.") ? resolveInputField(freshTicket, item, target) : null;
+                if (applyTarget(item, freshTicket, target, newValue)) {
+                    ticketChanged = true;
+                    // FieldUpdateCard.tsx keys its FIELD_LABELS/status/priority special-casing by
+                    // the bare field name ("description", not "ticket.description") — strip the
+                    // prefix so the entry renders with a proper label instead of a raw key.
+                    String changeKey = target.startsWith("ticket.") ? target.substring("ticket.".length()) : target;
+                    changes.put(changeKey, Map.of("from", oldValue != null ? oldValue : "", "to", newValue != null ? newValue : ""));
+                }
             }
-            if (ticketChanged) ticketRepo.save(ticket);
+            if (ticketChanged) {
+                ticketRepo.save(freshTicket);
+                writeActivityLog(freshTicket, item, changes);
+            }
 
             item.setStatus("done");
-            item.setLastError(null);
+            item.setLastError(warnings.isEmpty() ? null : String.join("; ", warnings));
             itemRepo.save(item);
             log.info("[ExternalApi] Item {} completed successfully ({} calls)", itemId, calls.size());
             workflowService.onItemCompleted(itemId, item.getTicketId());
@@ -194,8 +233,31 @@ public class ExternalApiActionExecutor {
         }
     }
 
-    /** trace is non-null only in {@link #testRun} — appended to for the "test this call now" result panel, ignored (null) during real item execution. */
-    private void runCall(HttpClient client, Map<String, Object> call, Map<String, String> vars, List<Map<String, Object>> trace) throws Exception {
+    /**
+     * A real gap found live alongside the stale-ticket bug above: this executor wrote ticket field
+     * changes straight through TicketRepository with no activity-log entry at all — unlike every
+     * other automated ticket mutator in this codebase (e.g. AccelerationSchedulerService.writeLog),
+     * which all record an actorId=0/"system" entry so the change is visible in the ticket's own
+     * Activity Log, not just silently applied. Mirrors that established pattern exactly.
+     */
+    private void writeActivityLog(TicketEntity ticket, WorkflowItemEntity item, Map<String, Object> changes) {
+        if (changes.isEmpty()) return;
+        TicketActivityLogEntity entry = new TicketActivityLogEntity();
+        entry.setTicketId(ticket.getId());
+        entry.setActorId(0); // 0 = system sentinel (no FK constraint in DB)
+        entry.setOperation("WORKFLOW_ACTION_APPLIED");
+        entry.setActivityType("system");
+        entry.setChanges(changes);
+        entry.setMetadata(Map.of("itemId", item.getId(), "itemTitle", item.getTitle(), "itemType", item.getType()));
+        activityLogRepo.save(entry);
+    }
+
+    /**
+     * trace is non-null only in {@link #testRun} — appended to for the "test this call now" result
+     * panel, ignored (null) during real item execution. warnings is non-null only during real item
+     * execution — see runSequence's javadoc-style comment above its declaration for why.
+     */
+    private void runCall(HttpClient client, Map<String, Object> call, Map<String, String> vars, List<Map<String, Object>> trace, List<String> warnings) throws Exception {
         String callName = Optional.ofNullable(str(call.get("name"))).orElse("call");
         String method = Optional.ofNullable(str(call.get("method"))).orElse("GET").toUpperCase();
         String url = substitute(str(call.get("urlTemplate")), vars);
@@ -244,6 +306,9 @@ public class ExternalApiActionExecutor {
                 vars.put(name, extracted != null ? String.valueOf(extracted) : "");
             } catch (Exception e) {
                 log.warn("[ExternalApi] Capture '{}' (jsonPath {}) failed on call '{}': {}", name, jsonPath, callName, e.getMessage());
+                if (warnings != null) {
+                    warnings.add("Capture '" + name + "' (jsonPath " + jsonPath + ") on call '" + callName + "' matched nothing in the response");
+                }
             }
         }
 

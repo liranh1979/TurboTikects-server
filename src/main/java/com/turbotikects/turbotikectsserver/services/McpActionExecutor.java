@@ -2,8 +2,10 @@ package com.turbotikects.turbotikectsserver.services;
 
 import com.jayway.jsonpath.JsonPath;
 import com.turbotikects.turbotikectsserver.dto.WorkflowActionTestResult;
+import com.turbotikects.turbotikectsserver.entitys.TicketActivityLogEntity;
 import com.turbotikects.turbotikectsserver.entitys.TicketEntity;
 import com.turbotikects.turbotikectsserver.entitys.WorkflowItemEntity;
+import com.turbotikects.turbotikectsserver.repositorys.TicketActivityLogRepository;
 import com.turbotikects.turbotikectsserver.repositorys.TicketRepository;
 import com.turbotikects.turbotikectsserver.repositorys.WorkflowItemRepository;
 import com.turbotikects.turbotikectsserver.utils.AesEncryptionUtils;
@@ -25,7 +27,8 @@ import java.util.*;
  *
  * typeConfig shape:
  * {@code
- * { "serverUrl": "https://...", "auth": {"type":"none"|"bearer", "tokenEnc" (server-managed)},
+ * { "serverUrl": "https://...", "auth": {"type":"none"|"bearer"|"api_key", "headerName" (api_key
+ *   only, default "X-API-Key"), "tokenEnc" (server-managed)},
  *   "calls": [ { "id", "order", "toolName",
  *                "argumentMappings": [{"toolArgument","ticketField"} | {"toolArgument","captureName"}],
  *                "responseCaptures": [{"name","resultPath"}] } ],
@@ -50,17 +53,20 @@ public class McpActionExecutor {
 
     private final WorkflowItemRepository itemRepo;
     private final TicketRepository ticketRepo;
+    private final TicketActivityLogRepository activityLogRepo;
     private final AesEncryptionUtils aes;
     private final AdminInboxService adminInboxService;
     private final McpClientService mcpClientService;
     private final WorkflowService workflowService;
 
     public McpActionExecutor(WorkflowItemRepository itemRepo, TicketRepository ticketRepo,
+                              TicketActivityLogRepository activityLogRepo,
                               AesEncryptionUtils aes, AdminInboxService adminInboxService,
                               McpClientService mcpClientService,
                               @Lazy WorkflowService workflowService) {
         this.itemRepo = itemRepo;
         this.ticketRepo = ticketRepo;
+        this.activityLogRepo = activityLogRepo;
         this.aes = aes;
         this.adminInboxService = adminInboxService;
         this.mcpClientService = mcpClientService;
@@ -75,12 +81,12 @@ public class McpActionExecutor {
     /**
      * FEAT-06 Phase 7 — "test this call now". Mirrors ExternalApiActionExecutor.testRun exactly:
      * reuses the real runCall unchanged against a throwaway in-memory ticket, no persistence.
-     * bearerToken is passed in explicitly (rather than decrypted from typeConfig here) because the
-     * Designer's in-memory draft may hold either a freshly-typed plaintext token (not yet saved/
-     * encrypted) or nothing at all if testing an unmodified already-saved node — the caller
-     * (controller) resolves which one applies before calling this.
+     * authType/headerName/token are passed in explicitly (rather than decrypted from typeConfig
+     * here) because the Designer's in-memory draft may hold either a freshly-typed plaintext token
+     * (not yet saved/encrypted) or nothing at all if testing an unmodified already-saved node — the
+     * caller (WorkflowActionTestService) resolves which one applies before calling this.
      */
-    public WorkflowActionTestResult testRun(Map<String, Object> typeConfig, String bearerToken, Map<String, String> sampleTicketFields) {
+    public WorkflowActionTestResult testRun(Map<String, Object> typeConfig, String authType, String headerName, String token, Map<String, String> sampleTicketFields) {
         List<Map<String, Object>> trace = new ArrayList<>();
         McpSyncClient client = null;
         try {
@@ -99,11 +105,11 @@ public class McpActionExecutor {
             syntheticTicket.setPriority(sampleTicketFields.getOrDefault("priority", "medium"));
             syntheticTicket.setTicketData(new LinkedHashMap<>(sampleTicketFields));
 
-            client = mcpClientService.openClient(serverUrl, bearerToken);
+            client = mcpClientService.openClient(serverUrl, authType, headerName, token);
             Map<String, Object> vars = new LinkedHashMap<>();
             for (Map<String, Object> call : calls) {
                 // No WorkflowItemEntity exists in test mode — a "this." source always reads as empty.
-                runCall(client, call, syntheticTicket, null, vars, trace);
+                runCall(client, call, syntheticTicket, null, vars, trace, null);
             }
             return WorkflowActionTestResult.success(vars, trace);
         } catch (Exception e) {
@@ -142,26 +148,69 @@ public class McpActionExecutor {
                 return;
             }
 
-            String bearerToken = decryptOrNull(authTokenOf(typeConfig));
-            client = mcpClientService.openClient(serverUrl, bearerToken);
+            Map<String, Object> auth = asMap(typeConfig.get("auth"));
+            String authType = str(auth.get("type"));
+            String headerName = str(auth.get("headerName"));
+            String token = decryptOrNull(authTokenOf(typeConfig));
+            client = mcpClientService.openClient(serverUrl, authType, headerName, token);
+
+            // Collects non-fatal capture/mapping problems (a resultPath that matched nothing, a
+            // response mapping referencing a capture that never populated) — the tool call itself
+            // can fully succeed while this still silently produces no field update, which is
+            // confusing with no visible signal at all (found live: an admin's "echo" call
+            // completed as "done" with the ticket description never updated, root-caused to a
+            // resultPath of "$.data" against a plain-text tool response, which this app wraps as
+            // {"text": ...} — "$.text" was the correct path). Surfaced via lastError even on a
+            // "done" item rather than only ever logged server-side, where no admin would see it.
+            List<String> warnings = new ArrayList<>();
 
             Map<String, Object> vars = new LinkedHashMap<>();
             for (Map<String, Object> call : calls) {
-                runCall(client, call, ticket, item, vars, null);
+                runCall(client, call, ticket, item, vars, null, warnings);
             }
 
+            // A real bug found live: the "ticket" loaded at the top of this method can be stale by
+            // the time this point is reached — the tool call sequence above can take seconds, and
+            // this item's own activation is itself commonly triggered by the SAME request that just
+            // changed the ticket's status (see WorkflowService.cascadeTicketStatus, spawned from
+            // TicketService.patch() on a background thread BEFORE that request's transaction
+            // commits). Writing back the entity loaded here would silently clobber that concurrent
+            // status change back to its old value (Hibernate's merge() on a detached entity does a
+            // full-column UPDATE, not just the touched fields, and TicketEntity has no real @Version
+            // optimistic lock to catch this). Re-fetching immediately before the write closes that
+            // window in practice — the call sequence above takes far longer than the handful of
+            // synchronous statements TicketService.patch() has left to run before it commits.
+            TicketEntity freshTicket = ticketRepo.findById(item.getTicketId()).orElse(ticket);
+
             boolean ticketChanged = false;
+            Map<String, Object> changes = new LinkedHashMap<>();
             Map<String, Object> fieldMappings = asMap(typeConfig.get("fieldMappings"));
             for (Map<String, Object> respMap : listOf(fieldMappings.get("response"))) {
                 String captureName = str(respMap.get("captureName"));
                 String target = str(respMap.get("target"));
-                if (captureName == null || target == null || !vars.containsKey(captureName)) continue;
-                if (applyTarget(item, ticket, target, vars.get(captureName))) ticketChanged = true;
+                if (captureName == null || target == null) continue;
+                if (!vars.containsKey(captureName)) {
+                    warnings.add("Response mapping to '" + target + "' was skipped — capture '" + captureName + "' was never populated");
+                    continue;
+                }
+                Object newValue = vars.get(captureName);
+                Object oldValue = target.startsWith("ticket.") ? resolveInputField(freshTicket, item, target) : null;
+                if (applyTarget(item, freshTicket, target, newValue)) {
+                    ticketChanged = true;
+                    // FieldUpdateCard.tsx keys its FIELD_LABELS/status/priority special-casing by
+                    // the bare field name ("description", not "ticket.description") — strip the
+                    // prefix so the entry renders with a proper label instead of a raw key.
+                    String changeKey = target.startsWith("ticket.") ? target.substring("ticket.".length()) : target;
+                    changes.put(changeKey, Map.of("from", oldValue != null ? oldValue : "", "to", newValue != null ? newValue : ""));
+                }
             }
-            if (ticketChanged) ticketRepo.save(ticket);
+            if (ticketChanged) {
+                ticketRepo.save(freshTicket);
+                writeActivityLog(freshTicket, item, changes);
+            }
 
             item.setStatus("done");
-            item.setLastError(null);
+            item.setLastError(warnings.isEmpty() ? null : String.join("; ", warnings));
             itemRepo.save(item);
             log.info("[Mcp] Item {} completed successfully ({} calls)", itemId, calls.size());
             workflowService.onItemCompleted(itemId, item.getTicketId());
@@ -174,8 +223,33 @@ public class McpActionExecutor {
         }
     }
 
-    /** trace is non-null only in {@link #testRun} — appended to for the "test this call now" result panel, ignored (null) during real item execution. */
-    private void runCall(McpSyncClient client, Map<String, Object> call, TicketEntity ticket, WorkflowItemEntity item, Map<String, Object> vars, List<Map<String, Object>> trace) {
+    /**
+     * A real gap found live alongside the stale-ticket bug above: this executor wrote ticket field
+     * changes straight through TicketRepository with no activity-log entry at all — unlike every
+     * other automated ticket mutator in this codebase (e.g. AccelerationSchedulerService.writeLog),
+     * which all record an actorId=0/"system" entry so the change is visible in the ticket's own
+     * Activity Log, not just silently applied. Mirrors that established pattern exactly.
+     */
+    private void writeActivityLog(TicketEntity ticket, WorkflowItemEntity item, Map<String, Object> changes) {
+        if (changes.isEmpty()) return;
+        TicketActivityLogEntity entry = new TicketActivityLogEntity();
+        entry.setTicketId(ticket.getId());
+        entry.setActorId(0); // 0 = system sentinel (no FK constraint in DB)
+        entry.setOperation("WORKFLOW_ACTION_APPLIED");
+        entry.setActivityType("system");
+        entry.setChanges(changes);
+        entry.setMetadata(Map.of("itemId", item.getId(), "itemTitle", item.getTitle(), "itemType", item.getType()));
+        activityLogRepo.save(entry);
+    }
+
+    /**
+     * trace is non-null only in {@link #testRun} — appended to for the "test this call now" result
+     * panel, ignored (null) during real item execution. warnings is non-null only during real item
+     * execution — {@link #testRun} skips it since its capturedValues already make a missing capture
+     * visible to the admin interactively; the real execution path has no such interactive feedback,
+     * so runSequence surfaces these via the item's lastError instead.
+     */
+    private void runCall(McpSyncClient client, Map<String, Object> call, TicketEntity ticket, WorkflowItemEntity item, Map<String, Object> vars, List<Map<String, Object>> trace, List<String> warnings) {
         String toolName = str(call.get("toolName"));
         if (toolName == null || toolName.isBlank()) {
             throw new IllegalArgumentException("A call has no toolName configured");
@@ -218,6 +292,9 @@ public class McpActionExecutor {
                 vars.put(name, extracted);
             } catch (Exception e) {
                 log.warn("[Mcp] Capture '{}' (resultPath {}) failed on tool '{}': {}", name, resultPath, toolName, e.getMessage());
+                if (warnings != null) {
+                    warnings.add("Capture '" + name + "' (resultPath " + resultPath + ") on tool '" + toolName + "' matched nothing in the response");
+                }
             }
         }
 
@@ -266,7 +343,8 @@ public class McpActionExecutor {
 
     private String authTokenOf(Map<String, Object> typeConfig) {
         Map<String, Object> auth = asMap(typeConfig.get("auth"));
-        if (!"bearer".equals(auth.get("type"))) return null;
+        String type = str(auth.get("type"));
+        if (!"bearer".equals(type) && !"api_key".equals(type)) return null;
         return str(auth.get("tokenEnc"));
     }
 

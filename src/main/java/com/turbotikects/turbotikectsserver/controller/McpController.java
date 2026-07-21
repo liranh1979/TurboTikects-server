@@ -32,7 +32,7 @@ public class McpController {
         }
         List<McpSchema.Tool> tools;
         try {
-            tools = mcpClientService.discoverTools(dto.getServerUrl(), dto.getToken());
+            tools = mcpClientService.discoverTools(dto.getServerUrl(), dto.getType(), dto.getHeaderName(), dto.getToken());
         } catch (Exception e) {
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "Could not connect to MCP server: " + e.getMessage());
         }
