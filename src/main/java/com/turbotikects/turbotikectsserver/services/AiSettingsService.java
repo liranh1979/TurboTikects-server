@@ -107,8 +107,40 @@ public class AiSettingsService {
         return llmProviderFactory.getProvider(entity.getProviderName()).validateKey(entity);
     }
 
+    // Retry a rate-limited call rather than fail it immediately — requested live by a user hitting
+    // Gemini's free tier limits on a real, somewhat-large request ("gemini is free with limit
+    // tokens, can we help gemini to get the current response even if will take more time"). Every
+    // LlmProvider.send() implementation here follows the same established convention of embedding
+    // the real HTTP status in the thrown IOException's message (e.g. "Gemini API error 429: ..."),
+    // so detecting a rate-limit specifically (not a genuine 400/401/403 the retry can't fix) by
+    // inspecting that message is reliable, not a hack — it's the same signal every provider already
+    // surfaces uniformly, without needing a new exception type threaded through 7+ provider files.
+    private static final int LLM_RETRY_MAX_ATTEMPTS = 4;
+    private static final long LLM_RETRY_INITIAL_BACKOFF_MS = 20_000;
+
     public String sendLlmRequest(AiSettingsEntity aiSettingsEntity, List<LlmStructure> llmRequest) throws URISyntaxException, IOException, InterruptedException {
-        return llmProviderFactory.getProvider(aiSettingsEntity.getProviderName()).send(aiSettingsEntity, llmRequest);
+        var provider = llmProviderFactory.getProvider(aiSettingsEntity.getProviderName());
+        long backoffMs = LLM_RETRY_INITIAL_BACKOFF_MS;
+        for (int attempt = 1; attempt <= LLM_RETRY_MAX_ATTEMPTS; attempt++) {
+            try {
+                return provider.send(aiSettingsEntity, llmRequest);
+            } catch (IOException e) {
+                if (attempt == LLM_RETRY_MAX_ATTEMPTS || !isRateLimitError(e)) throw e;
+                log.warn("[AiSettingsService] {} rate-limited (attempt {}/{}) — retrying in {}s: {}",
+                        aiSettingsEntity.getProviderName(), attempt, LLM_RETRY_MAX_ATTEMPTS, backoffMs / 1000, e.getMessage());
+                Thread.sleep(backoffMs);
+                backoffMs *= 2;
+            }
+        }
+        throw new IOException("Unreachable"); // loop always returns or throws above
+    }
+
+    private boolean isRateLimitError(IOException e) {
+        String msg = e.getMessage();
+        if (msg == null) return false;
+        String lower = msg.toLowerCase();
+        return msg.contains(" 429") || msg.contains(" 503")
+                || lower.contains("rate limit") || lower.contains("resource_exhausted") || lower.contains("quota");
     }
 
     public List<String> listModels(String providerName, String apiKey) throws URISyntaxException, IOException, InterruptedException {

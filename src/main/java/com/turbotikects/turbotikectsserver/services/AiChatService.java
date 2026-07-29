@@ -163,6 +163,36 @@ public class AiChatService {
         return toMessageDto(assistantMsg);
     }
 
+    // ── PERSISTED MULTI-TURN SESSION (non-chat features, e.g. AI field mapping) ─────────
+
+    /** Loads a session's full prior message history as LlmStructure, for callers that build their own system prompt/response shape instead of the chat one. */
+    public List<LlmStructure> getMessageHistory(Long sessionId, Integer userId) {
+        AiChatSessionEntity session = sessionRepo.findById(sessionId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+        if (!session.getUserId().equals(userId)) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN);
+        }
+        return messageRepo.findBySessionIdOrderByCreatedAt(sessionId).stream()
+                .filter(m -> !"system".equals(m.getRole()))
+                .map(m -> {
+                    LlmStructure s = new LlmStructure();
+                    s.setRole(m.getRole());
+                    s.setContent(m.getContent());
+                    return s;
+                })
+                .collect(Collectors.toList());
+    }
+
+    /** Persists one turn's message for callers using {@link #getMessageHistory}, without the chat-specific auto-title/system-prompt logic {@link #sendMessage} has. */
+    @Transactional
+    public void appendMessage(Long sessionId, String role, String content) {
+        AiChatMessageEntity msg = new AiChatMessageEntity();
+        msg.setSessionId(sessionId);
+        msg.setRole(role);
+        msg.setContent(content != null ? content : "");
+        messageRepo.save(msg);
+    }
+
     // ── ESCALATE TO TICKET ────────────────────────────────────────────────────
 
     @Transactional

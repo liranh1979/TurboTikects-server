@@ -1,6 +1,7 @@
 package com.turbotikects.turbotikectsserver.services;
 
 import com.jayway.jsonpath.JsonPath;
+import com.turbotikects.turbotikectsserver.dto.AiRefineCallInputDto;
 import com.turbotikects.turbotikectsserver.dto.WorkflowActionTestResult;
 import com.turbotikects.turbotikectsserver.entitys.TicketActivityLogEntity;
 import com.turbotikects.turbotikectsserver.entitys.TicketEntity;
@@ -14,6 +15,7 @@ import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 
 import java.net.URI;
+import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
@@ -62,6 +64,13 @@ public class ExternalApiActionExecutor {
     private static final int MAX_CALLS = 10;
     private static final int REQUEST_TIMEOUT_SECONDS = 15;
     private static final int MAX_RESPONSE_CHARS = 1_000_000; // ~1MB of text
+    // A real bug found live: the trace's "responsePreview" (used both for the admin's own eyes and,
+    // as of the new "Auto-map from this response" feature, as the actual ground truth handed to an
+    // LLM) was capped at 300/2000 chars — nowhere near enough for a real API's JSON body, causing
+    // the AI to only ever see a truncated fragment. This separate, much larger cap keeps the LLM
+    // request itself bounded (well under the existing 1MB capture-time MAX_RESPONSE_CHARS) while
+    // being large enough for real payloads (SerpApi-shaped flight-search JSON and similar).
+    private static final int MAX_RAW_RESPONSE_FOR_TRACE_CHARS = 200_000;
     private static final Pattern PLACEHOLDER = Pattern.compile("\\{\\{\\s*([a-zA-Z0-9_]+)\\s*\\}\\}");
 
     private final WorkflowItemRepository itemRepo;
@@ -260,8 +269,21 @@ public class ExternalApiActionExecutor {
     private void runCall(HttpClient client, Map<String, Object> call, Map<String, String> vars, List<Map<String, Object>> trace, List<String> warnings) throws Exception {
         String callName = Optional.ofNullable(str(call.get("name"))).orElse("call");
         String method = Optional.ofNullable(str(call.get("method"))).orElse("GET").toUpperCase();
-        String url = substitute(str(call.get("urlTemplate")), vars);
+        String url = substituteForUrl(str(call.get("urlTemplate")), vars);
         if (url == null || url.isBlank()) throw new IllegalArgumentException("Call '" + callName + "' has no URL configured");
+        // A real bug found live: substituteForUrl's PLACEHOLDER regex only recognizes {{name}}
+        // where name is exactly [a-zA-Z0-9_]+ — a placeholder containing anything else (a stray
+        // hyphen, a hidden/non-standard whitespace character, often introduced by copy-pasting
+        // vendor API docs) is silently left untouched rather than substituted, and since "{"/"}"
+        // are themselves illegal URI characters, this previously surfaced only as a cryptic
+        // "Illegal character in query at index N" from new URI(url) far below, with no hint that
+        // the real cause was an unresolved placeholder. This broader check (not the strict
+        // PLACEHOLDER regex) catches that class of leftover "{{"/"}}" text and fails clearly.
+        if (url.contains("{{") || url.contains("}}")) {
+            throw new IllegalArgumentException("Call '" + callName + "' has a URL with what looks like an unresolved \"{{...}}\" placeholder still present after substitution: " + url +
+                    " — check for a typo, an unsupported character (only letters, numbers, and underscores are allowed inside {{ }}), or a hidden character possibly introduced by copy-pasting.");
+        }
+        url = appendAuthQueryParam(url, call.get("auth"));
 
         String body = substitute(str(call.get("bodyTemplate")), vars);
         HttpRequest.BodyPublisher bodyPublisher = (body == null || body.isBlank())
@@ -291,19 +313,46 @@ public class ExternalApiActionExecutor {
             responseBody = responseBody.substring(0, MAX_RESPONSE_CHARS);
         }
 
+        String callId = str(call.get("id"));
+
         if (res.statusCode() < 200 || res.statusCode() >= 300) {
             String preview = responseBody != null && responseBody.length() > 300 ? responseBody.substring(0, 300) : responseBody;
-            if (trace != null) trace.add(traceEntry(callName, method, url, res.statusCode(), preview));
+            if (trace != null) trace.add(traceEntry(callId, callName, method, url, res.statusCode(), preview, rawResponseForTrace(responseBody)));
             throw new RuntimeException("Call '" + callName + "' returned HTTP " + res.statusCode() + ": " + preview);
         }
 
-        for (Map<String, Object> cap : listOf(call.get("responseCaptures"))) {
+        List<Map<String, Object>> captureConfigs = listOf(call.get("responseCaptures"));
+        Map<String, String> capturedThisCall = applyResponseCaptures(responseBody, captureConfigs, callName, warnings);
+        vars.putAll(capturedThisCall);
+
+        // A real gap found live: a real (non-test) run that gets a 2xx response but whose captures
+        // all match nothing left the admin with only "Capture 'X' matched nothing" per field and no
+        // way to see what the API actually sent back — testRun captures the full raw response for
+        // exactly this reason, but runSequence (trace == null here) never stored it anywhere at
+        // all. Surface a preview of the real response through the same warnings -> item.lastError
+        // path admins already see in the ticket UI, so a real-execution mismatch is diagnosable
+        // without having to reproduce it in the wizard's Test step.
+        if (warnings != null && trace == null && !captureConfigs.isEmpty() && capturedThisCall.size() < captureConfigs.size()) {
+            String preview = responseBody != null && responseBody.length() > 1000 ? responseBody.substring(0, 1000) + "…" : responseBody;
+            warnings.add("Real response received for call '" + callName + "': " + preview);
+        }
+
+        if (trace != null) {
+            String preview = responseBody != null && responseBody.length() > 2000 ? responseBody.substring(0, 2000) + "…" : responseBody;
+            trace.add(traceEntry(callId, callName, method, url, res.statusCode(), preview, rawResponseForTrace(responseBody)));
+        }
+    }
+
+    /** The one real JsonPath-extraction step (Jayway JsonPath, {@code JsonPath.read}) — evaluates each configured {name,jsonPath} capture against a response body and returns name→value. Shared by the live call path above and {@link #evaluateResponseCaptures} below (re-evaluating an already-fetched response, no new call), so both ever have exactly one implementation of "how a capture resolves." */
+    private Map<String, String> applyResponseCaptures(String responseBody, List<Map<String, Object>> responseCaptures, String callName, List<String> warnings) {
+        Map<String, String> captured = new LinkedHashMap<>();
+        for (Map<String, Object> cap : responseCaptures) {
             String name = str(cap.get("name"));
             String jsonPath = str(cap.get("jsonPath"));
             if (name == null || jsonPath == null) continue;
             try {
                 Object extracted = JsonPath.read(responseBody, jsonPath);
-                vars.put(name, extracted != null ? String.valueOf(extracted) : "");
+                captured.put(name, extracted != null ? String.valueOf(extracted) : "");
             } catch (Exception e) {
                 log.warn("[ExternalApi] Capture '{}' (jsonPath {}) failed on call '{}': {}", name, jsonPath, callName, e.getMessage());
                 if (warnings != null) {
@@ -311,23 +360,86 @@ public class ExternalApiActionExecutor {
                 }
             }
         }
-
-        if (trace != null) {
-            String preview = responseBody != null && responseBody.length() > 2000 ? responseBody.substring(0, 2000) + "…" : responseBody;
-            trace.add(traceEntry(callName, method, url, res.statusCode(), preview));
-        }
+        return captured;
     }
 
-    private Map<String, Object> traceEntry(String callName, String method, String url, int status, String responsePreview) {
+    /**
+     * "Verify Captures" — AI Workflow Builder's Response Mapping step. Re-evaluates each call's
+     * (AI-proposed or admin-edited) responseCaptures against a response ALREADY fetched by an
+     * earlier "Test this call now" run — no new live HTTP call is made. Exists specifically so the
+     * wizard never has to invoke the real (possibly non-idempotent — e.g. "place an order") API a
+     * second time just to confirm a JsonPath resolves; the admin already paid that cost once in
+     * the Test step, and this endpoint replays that same captured data.
+     */
+    public WorkflowActionTestResult evaluateResponseCaptures(List<AiRefineCallInputDto> calls) {
+        Map<String, String> vars = new LinkedHashMap<>();
+        List<String> warnings = new ArrayList<>();
+        List<Map<String, Object>> trace = new ArrayList<>();
+        boolean anyCaptureConfigured = false;
+        for (AiRefineCallInputDto c : calls) {
+            if (c.getRawResponse() == null || c.getRawResponse().isBlank()) continue;
+            List<Map<String, Object>> captures = c.getExistingResponseCaptures() != null ? c.getExistingResponseCaptures() : List.of();
+            if (!captures.isEmpty()) anyCaptureConfigured = true;
+            vars.putAll(applyResponseCaptures(c.getRawResponse(), captures, c.getName(), warnings));
+            Map<String, Object> entry = new LinkedHashMap<>();
+            entry.put("callId", c.getId());
+            entry.put("name", c.getName());
+            trace.add(entry);
+        }
+        // A real bug found live: this always returned success=true with the collected `warnings`
+        // silently discarded, even when EVERY capture failed to match anything (empty
+        // capturedValues) — the wizard's Step 5 read that as "verified fine" with no visible
+        // failure reason, which is exactly how a set of JSONPaths that don't match the real
+        // response shape (a genuinely wrong mapping, not a re-check bug) went unnoticed until it
+        // ran for real on a ticket. Report it as an actual failure — with the same specific
+        // per-field reasons runSequence's warnings already surface — rather than a quiet no-op.
+        if (anyCaptureConfigured && vars.isEmpty() && !warnings.isEmpty()) {
+            return WorkflowActionTestResult.failure(String.join("; ", warnings), trace);
+        }
+        WorkflowActionTestResult result = WorkflowActionTestResult.success(new LinkedHashMap<>(vars), trace);
+        if (!warnings.isEmpty()) result.setError(String.join("; ", warnings));
+        return result;
+    }
+
+    /** Bounded slice of the real response body for the new "Auto-map from this response" AI feature — distinct from the short human-facing responsePreview above, which stays as-is. */
+    private String rawResponseForTrace(String responseBody) {
+        if (responseBody == null) return "";
+        return responseBody.length() > MAX_RAW_RESPONSE_FOR_TRACE_CHARS
+                ? responseBody.substring(0, MAX_RAW_RESPONSE_FOR_TRACE_CHARS) : responseBody;
+    }
+
+    private Map<String, Object> traceEntry(String callId, String callName, String method, String url, int status, String responsePreview, String rawResponse) {
         Map<String, Object> entry = new LinkedHashMap<>();
+        entry.put("callId", callId);
         entry.put("name", callName);
         entry.put("request", method + " " + url);
         entry.put("status", status);
         entry.put("responsePreview", responsePreview);
+        entry.put("rawResponse", rawResponse);
         return entry;
     }
 
     @SuppressWarnings("unchecked")
+    /**
+     * A real gap found live: auth.type="api_key" only ever placed the key in a header — some real
+     * APIs (SerpAPI's Google Flights included) require it as a query parameter instead, and the
+     * only workaround before this was a this.<key> request-mapping placeholder with no admin-facing
+     * UI anywhere to ever set its value (see ExternalApiCallsEditor.tsx's ExternalApiAuth.location
+     * comment), or hardcoding the real secret in plaintext directly in the urlTemplate. Runs after
+     * the unresolved-placeholder check and before the URI is built, appending "?"/"&" + paramName +
+     * "=" + the encrypted-at-rest token (URL-encoded the same way every other substituted value is).
+     */
+    private String appendAuthQueryParam(String url, Object authObj) {
+        if (!(authObj instanceof Map)) return url;
+        Map<String, Object> auth = (Map<String, Object>) authObj;
+        if (!"api_key".equals(str(auth.get("type"))) || !"query".equals(str(auth.get("location")))) return url;
+        String token = decryptOrNull(str(auth.get("tokenEnc")));
+        if (token == null) return url;
+        String paramName = Optional.ofNullable(str(auth.get("headerName"))).filter(s -> !s.isBlank()).orElse("api_key");
+        String separator = url.contains("?") ? "&" : "?";
+        return url + separator + paramName + "=" + URLEncoder.encode(token, StandardCharsets.UTF_8);
+    }
+
     private void applyAuth(HttpRequest.Builder builder, Object authObj) {
         if (!(authObj instanceof Map)) return;
         Map<String, Object> auth = (Map<String, Object>) authObj;
@@ -340,6 +452,7 @@ public class ExternalApiActionExecutor {
                 if (token != null) builder.header("Authorization", "Bearer " + token);
             }
             case "api_key" -> {
+                if ("query".equals(str(auth.get("location")))) return; // already placed in the URL by appendAuthQueryParam
                 String token = decryptOrNull(str(auth.get("tokenEnc")));
                 String headerName = Optional.ofNullable(str(auth.get("headerName"))).filter(s -> !s.isBlank()).orElse("X-API-Key");
                 if (token != null) builder.header(headerName, token);
@@ -373,6 +486,30 @@ public class ExternalApiActionExecutor {
         while (m.find()) {
             String val = vars.getOrDefault(m.group(1), "");
             m.appendReplacement(sb, Matcher.quoteReplacement(val));
+        }
+        m.appendTail(sb);
+        return sb.toString();
+    }
+
+    /**
+     * A real bug found live: plain {@link #substitute} does a raw string swap with no escaping at
+     * all, which is fine for a JSON bodyTemplate (values there just need to not contain a literal
+     * unescaped quote, an existing accepted gap) but breaks urlTemplate the moment a substituted
+     * value contains a character that's illegal in a URI — e.g. a ticket field value with a space
+     * ("Ben Gurion") turned "...?origin=Ben Gurion&..." into an invalid URI, thrown as "Illegal
+     * character in query at index N" from `new URI(url)` — the template's own literal structure
+     * (?, &, =) must stay intact, but each substituted VALUE needs percent-encoding. Every
+     * urlTemplate placeholder is a substituted value (never literal template text), so this can
+     * safely encode every replacement without needing to distinguish path vs. query position.
+     */
+    private String substituteForUrl(String template, Map<String, String> vars) {
+        if (template == null) return null;
+        Matcher m = PLACEHOLDER.matcher(template);
+        StringBuilder sb = new StringBuilder();
+        while (m.find()) {
+            String val = vars.getOrDefault(m.group(1), "");
+            String encoded = URLEncoder.encode(val, StandardCharsets.UTF_8);
+            m.appendReplacement(sb, Matcher.quoteReplacement(encoded));
         }
         m.appendTail(sb);
         return sb.toString();

@@ -1,5 +1,6 @@
 package com.turbotikects.turbotikectsserver.services;
 
+import com.turbotikects.turbotikectsserver.dto.AiRefineCallInputDto;
 import com.turbotikects.turbotikectsserver.dto.WorkflowActionTestRequestDto;
 import com.turbotikects.turbotikectsserver.dto.WorkflowActionTestResult;
 import com.turbotikects.turbotikectsserver.repositorys.TemplateVersionRepository;
@@ -59,6 +60,11 @@ public class WorkflowActionTestService {
             return externalApiActionExecutor.testRun(typeConfig, sampleFields);
         }
         return WorkflowActionTestResult.failure("Unsupported action type: " + dto.getType(), List.of());
+    }
+
+    /** "Verify Captures" — see ExternalApiActionExecutor.evaluateResponseCaptures' javadoc: re-checks JsonPaths against an already-fetched response, no new live call. */
+    public WorkflowActionTestResult evaluateResponseCaptures(List<AiRefineCallInputDto> calls) {
+        return externalApiActionExecutor.evaluateResponseCaptures(calls);
     }
 
     @SuppressWarnings("unchecked")

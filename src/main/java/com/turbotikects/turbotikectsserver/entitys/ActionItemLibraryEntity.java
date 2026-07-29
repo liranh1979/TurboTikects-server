@@ -34,6 +34,12 @@ public class ActionItemLibraryEntity {
     @Column(nullable = false, length = 16)
     private String source = "manual";
 
+    // draft | complete — a draft can be saved from any step of the AI wizard before it's finished
+    // and resumed later; only "complete" entries are offered by the Workflow Designer's "Add from
+    // Library" picker. Defaulted at the Java level too, matching the column's DB default.
+    @Column(nullable = false, length = 16)
+    private String status = "complete";
+
     @Column(name = "created_at")
     private LocalDateTime createdAt;
 

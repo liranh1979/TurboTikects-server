@@ -20,8 +20,9 @@ public class ActionItemLibraryController {
     }
 
     @GetMapping
-    public List<ActionItemLibraryEntity> getAll(@RequestParam(required = false) String type) {
-        return service.getAll(type);
+    public List<ActionItemLibraryEntity> getAll(@RequestParam(required = false) String type,
+                                                 @RequestParam(required = false) String status) {
+        return service.getAll(type, status);
     }
 
     @PostMapping

@@ -10,4 +10,8 @@ public interface ActionItemLibraryRepository extends JpaRepository<ActionItemLib
     List<ActionItemLibraryEntity> findAllByOrderByUpdatedAtDesc();
 
     List<ActionItemLibraryEntity> findByTypeOrderByUpdatedAtDesc(String type);
+
+    List<ActionItemLibraryEntity> findByStatusOrderByUpdatedAtDesc(String status);
+
+    List<ActionItemLibraryEntity> findByTypeAndStatusOrderByUpdatedAtDesc(String type, String status);
 }

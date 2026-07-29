@@ -1,5 +1,6 @@
 package com.turbotikects.turbotikectsserver.services;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jayway.jsonpath.JsonPath;
 import com.turbotikects.turbotikectsserver.dto.WorkflowActionTestResult;
 import com.turbotikects.turbotikectsserver.entitys.TicketActivityLogEntity;
@@ -50,6 +51,9 @@ import java.util.*;
 public class McpActionExecutor {
 
     private static final int MAX_CALLS = 10;
+    // Same reasoning/value as ExternalApiActionExecutor's identical constant: bounded-but-large
+    // slice of the real response for the "Auto-map from this response" AI feature.
+    private static final int MAX_RAW_RESPONSE_FOR_TRACE_CHARS = 200_000;
 
     private final WorkflowItemRepository itemRepo;
     private final TicketRepository ticketRepo;
@@ -300,11 +304,29 @@ public class McpActionExecutor {
 
         if (trace != null) {
             Map<String, Object> entry = new LinkedHashMap<>();
+            entry.put("callId", str(call.get("id")));
             entry.put("name", toolName);
             entry.put("request", "tool:" + toolName + " args=" + arguments.keySet());
             entry.put("status", Boolean.TRUE.equals(result.isError()) ? "error" : "ok");
+            // A real gap found live: this previously only ever included extractText(result) (plain
+            // TextContent, concatenated) — but the actual JSONPath captures above run against
+            // resultObject (buildResultObject prefers structuredContent over text), so for any tool
+            // returning structured (non-text) content, the trace an admin/LLM saw could be empty or
+            // unrelated to what was really captured. "rawResult" now carries the literal object
+            // captures actually ran against; "responsePreview" stays as the plain-text-only view.
             entry.put("responsePreview", extractText(result));
+            entry.put("rawResult", rawResultForTrace(resultObject));
             trace.add(entry);
+        }
+    }
+
+    /** Bounded JSON-serialized slice of the real object captures ran against, for the "Auto-map from this response" AI feature. */
+    private String rawResultForTrace(Object resultObject) {
+        try {
+            String json = new ObjectMapper().writeValueAsString(resultObject);
+            return json.length() > MAX_RAW_RESPONSE_FOR_TRACE_CHARS ? json.substring(0, MAX_RAW_RESPONSE_FOR_TRACE_CHARS) : json;
+        } catch (Exception e) {
+            return "";
         }
     }
 
