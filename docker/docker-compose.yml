@@ -21,12 +21,15 @@ services:
       - "11434:11434"
     volumes:
       - ollama_storage:/root/.ollama
-    entrypoint: ["/bin/sh", "-c"]
-    command: >
-      "ollama serve &
-       sleep 5 &&
-       ollama pull gemma4:e2b;
-       wait"
+      - ./init-ollama.sh:/init-ollama.sh:ro
+    entrypoint: ["/bin/sh", "/init-ollama.sh"]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     healthcheck:
       test: ["CMD", "ollama", "list"]
       interval: 10s

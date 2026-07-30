@@ -25,6 +25,11 @@ SCRIPT_DIR  = Path(__file__).resolve().parent
 COMPOSE_TPL = SCRIPT_DIR / "docker-compose.yml"
 LAST_IMAGE  = SCRIPT_DIR / ".last_image"
 COMPOSE_OUT = Path.cwd() / "docker-compose.yml"
+# Ollama's entrypoint (see the ollama service in docker-compose.yml) bind-mounts this script in from
+# the same directory — it must land next to the generated docker-compose.yml on the target host,
+# not just next to the installer, or "docker compose up" fails with a missing-bind-mount error.
+INIT_SCRIPT_TPL = SCRIPT_DIR / "init-ollama.sh"
+INIT_SCRIPT_OUT = Path.cwd() / "init-ollama.sh"
 
 DEFAULT_IMAGE = "liran1979/turbotikects:latest"
 
@@ -117,6 +122,19 @@ def generate_compose(cfg):
         safe_v = str(v).replace("$", "$$")
         result = result.replace(f"${{{k.upper()}}}", safe_v)
     COMPOSE_OUT.write_text(result)
+    copy_init_script()
+
+def copy_init_script():
+    """Copies init-ollama.sh next to the generated docker-compose.yml (skipped when the installer
+    is a standalone single file with no accompanying script — the embedded fallback template's own
+    ollama service is self-contained precisely for that case, no bind-mounted script needed)."""
+    if not INIT_SCRIPT_TPL.exists():
+        return
+    shutil.copy2(INIT_SCRIPT_TPL, INIT_SCRIPT_OUT)
+    try:
+        os.chmod(INIT_SCRIPT_OUT, 0o755)
+    except Exception:
+        pass
 
 def poll_ready(port, timeout=120):
     url = f"http://localhost:{port}/api/v1/locales/en"
@@ -129,7 +147,10 @@ def poll_ready(port, timeout=120):
             time.sleep(3)
     return False
 
-# Embedded template (fallback if docker-compose.yml not alongside installer)
+# Embedded template (fallback if docker-compose.yml not alongside installer) — this path has no
+# guaranteed init-ollama.sh sitting next to it (a standalone single-file installer run), so its
+# ollama service stays self-contained via an inline command instead of the bind-mounted script the
+# real docker/docker-compose.yml template uses.
 EMBEDDED_TEMPLATE = """services:
   db:
     image: mysql:8.0
@@ -146,11 +167,33 @@ EMBEDDED_TEMPLATE = """services:
       retries: 12
       start_period: 30s
 
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_storage:/root/.ollama
+    entrypoint: ["/bin/sh", "-c"]
+    command: >
+      "ollama serve &
+       sleep 5 &&
+       ollama pull gemma4:e2b;
+       wait"
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
   app:
     image: "${DOCKER_IMAGE}"
     restart: unless-stopped
     depends_on:
       db:
+        condition: service_healthy
+      ollama:
         condition: service_healthy
     ports:
       - "${APP_PORT}:3000"
@@ -163,12 +206,14 @@ EMBEDDED_TEMPLATE = """services:
       ADMIN_PASSWORD: "${ADMIN_PASSWORD}"
       ADMIN_DISPLAY_NAME: "${ADMIN_DISPLAY_NAME}"
       CORS_ORIGINS: "http://localhost:${APP_PORT}"
+      OLLAMA_BASE_URL: http://ollama:11434
     volumes:
       - uploads:/app/uploads
 
 volumes:
   db_data:
   uploads:
+  ollama_storage:
 """
 
 
