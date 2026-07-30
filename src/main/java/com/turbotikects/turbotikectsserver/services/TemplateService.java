@@ -1141,6 +1141,10 @@ public class TemplateService {
                   nothing genuinely fits.
                 - "ticketField" MUST start with either "ticket." (from the available ticket fields)
                   or "this." (from the available workflow fields) — never a bare field name.
+                - Never map a required input to a field whose "type" is "nodelist" — that type holds
+                  a growing LIST of text entries, not the single scalar value a call placeholder
+                  needs. Treat it as unusable as a source here, exactly like a type that plainly
+                  doesn't fit.
                 - MANDATORY CHECK for every single "this.<key>" you write, with no exceptions: does
                   <key> EXACTLY match a key already in the provided workflow fields list, AND is that
                   field's "type" a genuinely good fit? If YES, use that exact key. If NO, you MUST do
@@ -1273,7 +1277,9 @@ public class TemplateService {
                 documentation, not a guess. For each call whose "rawResponse" is non-empty, you'll \
                 see a JSON array of every real {"path": ..., "value": ...} pair available in that \
                 response (already flattened for you — you never need to construct or guess a path \
-                yourself, only COPY one verbatim from this list). If a call's rawResponse couldn't \
+                yourself, only COPY one verbatim from this list). Some entries additionally have \
+                "isRepeatableList": true — these represent a whole JSON array (see the nodelist rule \
+                below for when to copy one of THESE paths instead of a plain leaf path). If a call's rawResponse couldn't \
                 be flattened (plain text, not JSON), you'll see the raw text instead — in that case \
                 "$.text" is the only usable __PATH_KEY__ for it. Produce a JSON object with EXACTLY \
                 this shape (no markdown, no explanation, ONLY the JSON):
@@ -1333,6 +1339,19 @@ public class TemplateService {
                 - Every fieldMappings.response[].target MUST start with either "ticket." (from the \
                   available ticket fields) or "this." (from the available workflow fields) — never a \
                   bare field name.
+                - A target field whose "type" (in the available ticket/workflow field lists) is \
+                  "nodelist" stores a growing list of short readable text entries, not a single \
+                  value — each response mapping to it ADDS one or more new entries rather than \
+                  overwriting anything, and the executor automatically turns a captured JSON \
+                  object/array into readable "key: value, key2: value2" text for you, so you never \
+                  need to pre-format it yourself. When the real API response contains a JSON array \
+                  where EACH ELEMENT should become its own list entry (e.g. one entry per flight \
+                  option, one per search result), capture the WHOLE array by copying the path from \
+                  an entry marked "isRepeatableList": true EXACTLY as given, with no "[N]" index \
+                  appended — that captures every real element at run time, not just the single \
+                  compacted preview element you see in this prompt. Only use an indexed leaf path \
+                  (as for every other field type) when the nodelist should get just one entry from a \
+                  single object, not one per array element.
                 - Keep it minimal and correct rather than speculative — a capture or mapping you're \
                   not confident about is worse than leaving it out.
                 - If earlier turns are present in this conversation, you already know the original \
@@ -1440,7 +1459,18 @@ public class TemplateService {
         return node; // scalar (string/number/boolean/null) — unchanged
     }
 
-    /** Walks an (already array-compacted) tree and collects one {path, value} entry per leaf/scalar — the exact, ready-to-copy jsonPath strings the prompt hands the model instead of nested JSON. Capped at MAX_FLATTENED_LEAF_ENTRIES to bound prompt size on a response with very many distinct top-level fields. */
+    /**
+     * Walks an (already array-compacted) tree and collects one {path, value} entry per leaf/scalar
+     * — the exact, ready-to-copy jsonPath strings the prompt hands the model instead of nested
+     * JSON. Capped at MAX_FLATTENED_LEAF_ENTRIES to bound prompt size on a response with very many
+     * distinct top-level fields.
+     *
+     * Also emits one extra entry for the array itself at every array node (path with no trailing
+     * index, "isRepeatableList": true, value = the already-compacted one-element preview) — added
+     * to support mapping a whole array to a "nodelist" target field (see aiRefineResponseMapping's
+     * system prompt): the executor turns each real element of that array into one human-readable
+     * node at run time, not just the single compacted preview element seen here.
+     */
     private void flattenToPathValueList(JsonNode node, String path, List<Map<String, Object>> out) {
         if (out.size() >= MAX_FLATTENED_LEAF_ENTRIES) return;
         if (node.isObject()) {
@@ -1450,6 +1480,11 @@ public class TemplateService {
                 flattenToPathValueList(entry.getValue(), path + "." + entry.getKey(), out);
             }
         } else if (node.isArray()) {
+            Map<String, Object> arrayEntry = new LinkedHashMap<>();
+            arrayEntry.put("path", path);
+            arrayEntry.put("value", node);
+            arrayEntry.put("isRepeatableList", true);
+            out.add(arrayEntry);
             for (int i = 0; i < node.size() && out.size() < MAX_FLATTENED_LEAF_ENTRIES; i++) {
                 flattenToPathValueList(node.get(i), path + "[" + i + "]", out);
             }

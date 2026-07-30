@@ -3,6 +3,8 @@ package com.turbotikects.turbotikectsserver.services;
 import com.turbotikects.turbotikectsserver.dto.AiRefineCallInputDto;
 import com.turbotikects.turbotikectsserver.dto.WorkflowActionTestRequestDto;
 import com.turbotikects.turbotikectsserver.dto.WorkflowActionTestResult;
+import com.turbotikects.turbotikectsserver.entitys.ActionItemLibraryEntity;
+import com.turbotikects.turbotikectsserver.repositorys.ActionItemLibraryRepository;
 import com.turbotikects.turbotikectsserver.repositorys.TemplateVersionRepository;
 import com.turbotikects.turbotikectsserver.utils.AesEncryptionUtils;
 import org.springframework.stereotype.Service;
@@ -27,14 +29,17 @@ import java.util.*;
 public class WorkflowActionTestService {
 
     private final TemplateVersionRepository versionRepo;
+    private final ActionItemLibraryRepository actionItemLibraryRepo;
     private final AesEncryptionUtils aes;
     private final ExternalApiActionExecutor externalApiActionExecutor;
     private final McpActionExecutor mcpActionExecutor;
 
-    public WorkflowActionTestService(TemplateVersionRepository versionRepo, AesEncryptionUtils aes,
+    public WorkflowActionTestService(TemplateVersionRepository versionRepo, ActionItemLibraryRepository actionItemLibraryRepo,
+                                      AesEncryptionUtils aes,
                                       ExternalApiActionExecutor externalApiActionExecutor,
                                       McpActionExecutor mcpActionExecutor) {
         this.versionRepo = versionRepo;
+        this.actionItemLibraryRepo = actionItemLibraryRepo;
         this.aes = aes;
         this.externalApiActionExecutor = externalApiActionExecutor;
         this.mcpActionExecutor = mcpActionExecutor;
@@ -120,6 +125,21 @@ public class WorkflowActionTestService {
         return null;
     }
 
+    /**
+     * A real bug found live: "send the API key as a query parameter" configured through the AI
+     * Workflow Builder wizard still failed at test time with "api_key not been sent" — because the
+     * wizard never provides templateId/nodeId (see its own comment on WorkflowActionTestService's
+     * class javadoc), so savedTypeConfig here is always null for it, AND when the wizard resumes an
+     * ALREADY-SAVED Action Item Library draft, its in-memory call.auth only ever holds the masked
+     * "hasToken": true flag (GETs always mask real ciphertext — see ActionItemLibraryService.
+     * maskedCopy), never a plaintext "token" to fall back on either. Every existing fallback path
+     * came up empty, so tokenEnc/token both stayed absent and appendAuthQueryParam silently no-op'd.
+     * Fixed the same way TemplateService.carryForwardSecretsFromLibrary resolves the identical gap
+     * for a real save: since a call's own id is preserved unchanged both across "Add from Library"
+     * and across every wizard save, any action_item_library row with a matching call id is the
+     * right place to pull the real (still-encrypted) secret from — added as one more fallback
+     * alongside the existing saved-template-node lookup, tried only when that one comes up empty.
+     */
     @SuppressWarnings("unchecked")
     private void resolveExternalApiCallAuths(Map<String, Object> draftTypeConfig, Map<String, Object> savedTypeConfig) {
         Map<String, Map<String, Object>> savedAuthByCallId = new HashMap<>();
@@ -131,16 +151,36 @@ public class WorkflowActionTestService {
             }
         }
         if (!(draftTypeConfig.get("calls") instanceof List<?> calls)) return;
+        Map<String, Map<String, Object>> libraryAuthByCallId = null; // loaded lazily, only if actually needed
         for (Object cObj : calls) {
             if (!(cObj instanceof Map)) continue;
             Map<String, Object> call = (Map<String, Object>) cObj;
             if (!(call.get("auth") instanceof Map)) continue;
             Map<String, Object> auth = (Map<String, Object>) call.get("auth");
             Map<String, Object> savedAuth = savedAuthByCallId.get(call.get("id"));
+            if (savedAuth == null) {
+                if (libraryAuthByCallId == null) libraryAuthByCallId = libraryAuthByCallId();
+                savedAuth = libraryAuthByCallId.get(call.get("id"));
+            }
             resolveSecretField(auth, "token", "tokenEnc", savedAuth);
             resolveSecretField(auth, "username", "usernameEnc", savedAuth);
             resolveSecretField(auth, "password", "passwordEnc", savedAuth);
         }
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Map<String, Object>> libraryAuthByCallId() {
+        Map<String, Map<String, Object>> map = new HashMap<>();
+        for (ActionItemLibraryEntity entry : actionItemLibraryRepo.findAll()) {
+            Map<String, Object> tc = entry.getTypeConfig();
+            if (tc == null || !(tc.get("calls") instanceof List<?> calls)) continue;
+            for (Object c : calls) {
+                if (c instanceof Map<?, ?> call && call.get("id") instanceof String cid && call.get("auth") instanceof Map) {
+                    map.put(cid, (Map<String, Object>) call.get("auth"));
+                }
+            }
+        }
+        return map;
     }
 
     private void resolveSecretField(Map<String, Object> auth, String plainKey, String encKey, Map<String, Object> savedAuth) {

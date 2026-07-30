@@ -3,9 +3,11 @@ package com.turbotikects.turbotikectsserver.services;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jayway.jsonpath.JsonPath;
 import com.turbotikects.turbotikectsserver.dto.WorkflowActionTestResult;
+import com.turbotikects.turbotikectsserver.entitys.FieldDefinitionsEntity;
 import com.turbotikects.turbotikectsserver.entitys.TicketActivityLogEntity;
 import com.turbotikects.turbotikectsserver.entitys.TicketEntity;
 import com.turbotikects.turbotikectsserver.entitys.WorkflowItemEntity;
+import com.turbotikects.turbotikectsserver.repositorys.FieldDefinitionsRepository;
 import com.turbotikects.turbotikectsserver.repositorys.TicketActivityLogRepository;
 import com.turbotikects.turbotikectsserver.repositorys.TicketRepository;
 import com.turbotikects.turbotikectsserver.repositorys.WorkflowItemRepository;
@@ -62,12 +64,14 @@ public class McpActionExecutor {
     private final AdminInboxService adminInboxService;
     private final McpClientService mcpClientService;
     private final WorkflowService workflowService;
+    private final FieldDefinitionsRepository fieldDefinitionsRepo;
 
     public McpActionExecutor(WorkflowItemRepository itemRepo, TicketRepository ticketRepo,
                               TicketActivityLogRepository activityLogRepo,
                               AesEncryptionUtils aes, AdminInboxService adminInboxService,
                               McpClientService mcpClientService,
-                              @Lazy WorkflowService workflowService) {
+                              @Lazy WorkflowService workflowService,
+                              FieldDefinitionsRepository fieldDefinitionsRepo) {
         this.itemRepo = itemRepo;
         this.ticketRepo = ticketRepo;
         this.activityLogRepo = activityLogRepo;
@@ -75,6 +79,7 @@ public class McpActionExecutor {
         this.adminInboxService = adminInboxService;
         this.mcpClientService = mcpClientService;
         this.workflowService = workflowService;
+        this.fieldDefinitionsRepo = fieldDefinitionsRepo;
     }
 
     public void execute(WorkflowItemEntity item) {
@@ -186,6 +191,16 @@ public class McpActionExecutor {
             // synchronous statements TicketService.patch() has left to run before it commits.
             TicketEntity freshTicket = ticketRepo.findById(item.getTicketId()).orElse(ticket);
 
+            // Which target fields are "nodelist"-typed (an admin-editable list of readable text
+            // entries — see TicketFormRenderer.tsx's NodeListControl) — determines whether a
+            // response mapping below OVERWRITES the target (every other field type) or APPENDS one
+            // new node per mapped value (nodelist only). MCP tool results are commonly a structured
+            // JSON object/array already (vars holds the raw, un-stringified capture — see runCall
+            // above), so this is exactly where a captured object needs to be humanized rather than
+            // dumped as a raw Map.toString().
+            Map<String, String> ticketFieldTypes = fieldTypesByEntity("ticket");
+            Map<String, String> workflowFieldTypes = fieldTypesByEntity("workflow");
+
             boolean ticketChanged = false;
             Map<String, Object> changes = new LinkedHashMap<>();
             Map<String, Object> fieldMappings = asMap(typeConfig.get("fieldMappings"));
@@ -197,15 +212,32 @@ public class McpActionExecutor {
                     warnings.add("Response mapping to '" + target + "' was skipped — capture '" + captureName + "' was never populated");
                     continue;
                 }
-                Object newValue = vars.get(captureName);
+                String fieldType = target.startsWith("this.") ? workflowFieldTypes.get(target.substring("this.".length()))
+                        : target.startsWith("ticket.") ? ticketFieldTypes.get(target.substring("ticket.".length())) : null;
                 Object oldValue = target.startsWith("ticket.") ? resolveInputField(freshTicket, item, target) : null;
-                if (applyTarget(item, freshTicket, target, newValue)) {
+
+                boolean changed;
+                Object loggedValue;
+                if ("nodelist".equals(fieldType)) {
+                    List<String> nodesToAdd = toNodeStrings(vars.get(captureName));
+                    if (nodesToAdd.isEmpty()) {
+                        warnings.add("Response mapping to '" + target + "' was skipped — capture '" + captureName + "' resolved to an empty value");
+                        continue;
+                    }
+                    changed = applyNodelistTarget(item, freshTicket, target, nodesToAdd);
+                    loggedValue = String.join("; ", nodesToAdd);
+                } else {
+                    Object newValue = vars.get(captureName);
+                    changed = applyTarget(item, freshTicket, target, newValue);
+                    loggedValue = newValue;
+                }
+                if (changed) {
                     ticketChanged = true;
                     // FieldUpdateCard.tsx keys its FIELD_LABELS/status/priority special-casing by
                     // the bare field name ("description", not "ticket.description") — strip the
                     // prefix so the entry renders with a proper label instead of a raw key.
                     String changeKey = target.startsWith("ticket.") ? target.substring("ticket.".length()) : target;
-                    changes.put(changeKey, Map.of("from", oldValue != null ? oldValue : "", "to", newValue != null ? newValue : ""));
+                    changes.put(changeKey, Map.of("from", oldValue != null ? oldValue : "", "to", loggedValue != null ? loggedValue : ""));
                 }
             }
             if (ticketChanged) {
@@ -423,6 +455,78 @@ public class McpActionExecutor {
                 if (td == null) { td = new LinkedHashMap<>(); ticket.setTicketData(td); }
                 td.put(key, value);
             }
+            return true;
+        }
+        log.warn("[Mcp] Response mapping target '{}' doesn't start with 'ticket.' or 'this.' — ignored", target);
+        return false;
+    }
+
+    /** field_key -> field_type for every field_definitions row of the given entity_type ("ticket" or "workflow") — mirrors ExternalApiActionExecutor.fieldTypesByEntity exactly. */
+    private Map<String, String> fieldTypesByEntity(String entityType) {
+        Map<String, String> types = new HashMap<>();
+        for (FieldDefinitionsEntity f : fieldDefinitionsRepo.findByEntityTypeOrderByDisplayOrder(entityType)) {
+            types.put(f.getFieldKey(), f.getFieldType());
+        }
+        return types;
+    }
+
+    /** Mirrors ExternalApiActionExecutor.toNodeStrings exactly — a JSON array captured by an MCP tool result becomes one humanized node per element; a single object/scalar becomes exactly one node. */
+    private List<String> toNodeStrings(Object raw) {
+        if (raw instanceof List<?> list) {
+            List<String> nodes = new ArrayList<>();
+            for (Object element : list) {
+                String node = humanizeJsonValue(element);
+                if (!node.isBlank()) nodes.add(node);
+            }
+            return nodes;
+        }
+        String node = humanizeJsonValue(raw);
+        return node.isBlank() ? List.of() : List.of(node);
+    }
+
+    /** "take json break it into human readable data as string" — mirrors ExternalApiActionExecutor.humanizeJsonValue exactly: flattens a JSON object/array into a plain "key: value, key2: value2" line instead of a raw Map.toString()/JSON dump. */
+    private String humanizeJsonValue(Object value) {
+        if (value == null) return "";
+        if (value instanceof Map<?, ?> map) {
+            StringBuilder sb = new StringBuilder();
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                if (sb.length() > 0) sb.append(", ");
+                sb.append(entry.getKey()).append(": ").append(humanizeJsonValue(entry.getValue()));
+            }
+            return sb.toString();
+        }
+        if (value instanceof List<?> list) {
+            StringBuilder sb = new StringBuilder();
+            for (Object element : list) {
+                if (sb.length() > 0) sb.append(", ");
+                sb.append(humanizeJsonValue(element));
+            }
+            return sb.toString();
+        }
+        return String.valueOf(value);
+    }
+
+    /** Appends (never overwrites) — mirrors ExternalApiActionExecutor.appendNodes exactly. */
+    @SuppressWarnings("unchecked")
+    private void appendNodes(Map<String, Object> data, String key, List<String> nodesToAdd) {
+        List<Object> nodes = data.get(key) instanceof List<?> existing ? new ArrayList<>(existing) : new ArrayList<>();
+        nodes.addAll(nodesToAdd);
+        data.put(key, nodes);
+    }
+
+    /** nodelist counterpart to {@link #applyTarget} — same target grammar, append-only semantics instead of overwrite. Returns true if it wrote to the ticket (caller must save), matching applyTarget's contract. */
+    private boolean applyNodelistTarget(WorkflowItemEntity item, TicketEntity ticket, String target, List<String> nodesToAdd) {
+        if (target.startsWith("this.")) {
+            Map<String, Object> fv = item.getFieldValues();
+            if (fv == null) { fv = new LinkedHashMap<>(); item.setFieldValues(fv); }
+            appendNodes(fv, target.substring("this.".length()), nodesToAdd);
+            return false;
+        }
+        if (target.startsWith("ticket.")) {
+            String key = target.substring("ticket.".length());
+            Map<String, Object> td = ticket.getTicketData();
+            if (td == null) { td = new LinkedHashMap<>(); ticket.setTicketData(td); }
+            appendNodes(td, key, nodesToAdd);
             return true;
         }
         log.warn("[Mcp] Response mapping target '{}' doesn't start with 'ticket.' or 'this.' — ignored", target);

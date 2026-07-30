@@ -3,9 +3,11 @@ package com.turbotikects.turbotikectsserver.services;
 import com.jayway.jsonpath.JsonPath;
 import com.turbotikects.turbotikectsserver.dto.AiRefineCallInputDto;
 import com.turbotikects.turbotikectsserver.dto.WorkflowActionTestResult;
+import com.turbotikects.turbotikectsserver.entitys.FieldDefinitionsEntity;
 import com.turbotikects.turbotikectsserver.entitys.TicketActivityLogEntity;
 import com.turbotikects.turbotikectsserver.entitys.TicketEntity;
 import com.turbotikects.turbotikectsserver.entitys.WorkflowItemEntity;
+import com.turbotikects.turbotikectsserver.repositorys.FieldDefinitionsRepository;
 import com.turbotikects.turbotikectsserver.repositorys.TicketActivityLogRepository;
 import com.turbotikects.turbotikectsserver.repositorys.TicketRepository;
 import com.turbotikects.turbotikectsserver.repositorys.WorkflowItemRepository;
@@ -79,6 +81,7 @@ public class ExternalApiActionExecutor {
     private final AesEncryptionUtils aes;
     private final AdminInboxService adminInboxService;
     private final WorkflowService workflowService;
+    private final FieldDefinitionsRepository fieldDefinitionsRepo;
 
     // @Lazy on WorkflowService only — mirrors the WorkflowService<->ApprovalService cycle fix
     // (WorkflowService.activateItem dispatches INTO this class, this class calls back into
@@ -86,13 +89,15 @@ public class ExternalApiActionExecutor {
     public ExternalApiActionExecutor(WorkflowItemRepository itemRepo, TicketRepository ticketRepo,
                                       TicketActivityLogRepository activityLogRepo,
                                       AesEncryptionUtils aes, AdminInboxService adminInboxService,
-                                      @Lazy WorkflowService workflowService) {
+                                      @Lazy WorkflowService workflowService,
+                                      FieldDefinitionsRepository fieldDefinitionsRepo) {
         this.itemRepo = itemRepo;
         this.ticketRepo = ticketRepo;
         this.activityLogRepo = activityLogRepo;
         this.aes = aes;
         this.adminInboxService = adminInboxService;
         this.workflowService = workflowService;
+        this.fieldDefinitionsRepo = fieldDefinitionsRepo;
     }
 
     /** Called from WorkflowService.activateItem the moment an external_api item becomes in_progress. Runs on a background thread — never blocks the caller's transaction with network I/O. */
@@ -139,7 +144,7 @@ public class ExternalApiActionExecutor {
 
             HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(REQUEST_TIMEOUT_SECONDS)).build();
             for (Map<String, Object> call : calls) {
-                runCall(client, call, vars, trace, null);
+                runCall(client, call, vars, trace, null, null);
             }
             return WorkflowActionTestResult.success(new LinkedHashMap<>(vars), trace);
         } catch (Exception e) {
@@ -189,8 +194,15 @@ public class ExternalApiActionExecutor {
             // field actually updated and zero visible indication anything was wrong.
             List<String> warnings = new ArrayList<>();
 
+            // Populated alongside "vars" (which flattens every capture down to a plain String for
+            // {{placeholder}} substitution) with the RAW JsonPath.read result of each capture — a
+            // capture whose jsonPath targets a JSON object/array (not a scalar leaf) needs its real
+            // structure, not vars' stringified form, to be split into human-readable nodelist entries
+            // below. See applyResponseCaptures/humanizeJsonValue.
+            Map<String, Object> rawCaptured = new LinkedHashMap<>();
+
             for (Map<String, Object> call : calls) {
-                runCall(client, call, vars, null, warnings);
+                runCall(client, call, vars, null, warnings, rawCaptured);
             }
 
             // A real bug found live: "ticket" (loaded above, before the potentially multi-second
@@ -204,6 +216,15 @@ public class ExternalApiActionExecutor {
             // catch this). Re-fetching immediately before the write closes that window in practice.
             TicketEntity freshTicket = ticketRepo.findById(item.getTicketId()).orElse(ticket);
 
+            // Which target fields are "nodelist"-typed (an admin-editable list of readable text
+            // entries — see TicketFormRenderer.tsx's NodeListControl) — determines whether a
+            // response mapping below OVERWRITES the target (every other field type) or APPENDS one
+            // new node per mapped value (nodelist only), per admin request: "the AI agent will
+            // support all the field types include node_list, it need to know how to add node to the
+            // list, take json break it into human readable data as string".
+            Map<String, String> ticketFieldTypes = fieldTypesByEntity("ticket");
+            Map<String, String> workflowFieldTypes = fieldTypesByEntity("workflow");
+
             boolean ticketChanged = false;
             Map<String, Object> changes = new LinkedHashMap<>();
             for (Map<String, Object> respMap : listOf(fieldMappings.get("response"))) {
@@ -214,15 +235,32 @@ public class ExternalApiActionExecutor {
                     warnings.add("Response mapping to '" + target + "' was skipped — capture '" + captureName + "' was never populated");
                     continue;
                 }
-                String newValue = vars.get(captureName);
+                String fieldType = target.startsWith("this.") ? workflowFieldTypes.get(target.substring("this.".length()))
+                        : target.startsWith("ticket.") ? ticketFieldTypes.get(target.substring("ticket.".length())) : null;
                 Object oldValue = target.startsWith("ticket.") ? resolveInputField(freshTicket, item, target) : null;
-                if (applyTarget(item, freshTicket, target, newValue)) {
+
+                boolean changed;
+                String loggedValue;
+                if ("nodelist".equals(fieldType)) {
+                    List<String> nodesToAdd = toNodeStrings(rawCaptured.getOrDefault(captureName, vars.get(captureName)));
+                    if (nodesToAdd.isEmpty()) {
+                        warnings.add("Response mapping to '" + target + "' was skipped — capture '" + captureName + "' resolved to an empty value");
+                        continue;
+                    }
+                    changed = applyNodelistTarget(item, freshTicket, target, nodesToAdd);
+                    loggedValue = String.join("; ", nodesToAdd);
+                } else {
+                    String newValue = vars.get(captureName);
+                    changed = applyTarget(item, freshTicket, target, newValue);
+                    loggedValue = newValue;
+                }
+                if (changed) {
                     ticketChanged = true;
                     // FieldUpdateCard.tsx keys its FIELD_LABELS/status/priority special-casing by
                     // the bare field name ("description", not "ticket.description") — strip the
                     // prefix so the entry renders with a proper label instead of a raw key.
                     String changeKey = target.startsWith("ticket.") ? target.substring("ticket.".length()) : target;
-                    changes.put(changeKey, Map.of("from", oldValue != null ? oldValue : "", "to", newValue != null ? newValue : ""));
+                    changes.put(changeKey, Map.of("from", oldValue != null ? oldValue : "", "to", loggedValue != null ? loggedValue : ""));
                 }
             }
             if (ticketChanged) {
@@ -266,7 +304,7 @@ public class ExternalApiActionExecutor {
      * panel, ignored (null) during real item execution. warnings is non-null only during real item
      * execution — see runSequence's javadoc-style comment above its declaration for why.
      */
-    private void runCall(HttpClient client, Map<String, Object> call, Map<String, String> vars, List<Map<String, Object>> trace, List<String> warnings) throws Exception {
+    private void runCall(HttpClient client, Map<String, Object> call, Map<String, String> vars, List<Map<String, Object>> trace, List<String> warnings, Map<String, Object> rawCaptured) throws Exception {
         String callName = Optional.ofNullable(str(call.get("name"))).orElse("call");
         String method = Optional.ofNullable(str(call.get("method"))).orElse("GET").toUpperCase();
         String url = substituteForUrl(str(call.get("urlTemplate")), vars);
@@ -322,7 +360,7 @@ public class ExternalApiActionExecutor {
         }
 
         List<Map<String, Object>> captureConfigs = listOf(call.get("responseCaptures"));
-        Map<String, String> capturedThisCall = applyResponseCaptures(responseBody, captureConfigs, callName, warnings);
+        Map<String, String> capturedThisCall = applyResponseCaptures(responseBody, captureConfigs, callName, warnings, rawCaptured);
         vars.putAll(capturedThisCall);
 
         // A real gap found live: a real (non-test) run that gets a 2xx response but whose captures
@@ -345,6 +383,11 @@ public class ExternalApiActionExecutor {
 
     /** The one real JsonPath-extraction step (Jayway JsonPath, {@code JsonPath.read}) — evaluates each configured {name,jsonPath} capture against a response body and returns name→value. Shared by the live call path above and {@link #evaluateResponseCaptures} below (re-evaluating an already-fetched response, no new call), so both ever have exactly one implementation of "how a capture resolves." */
     private Map<String, String> applyResponseCaptures(String responseBody, List<Map<String, Object>> responseCaptures, String callName, List<String> warnings) {
+        return applyResponseCaptures(responseBody, responseCaptures, callName, warnings, null);
+    }
+
+    /** @param rawOut when non-null, also collects each capture's RAW (pre-stringification) JsonPath.read result — needed to humanize a captured JSON object/array into nodelist entries; see runSequence. */
+    private Map<String, String> applyResponseCaptures(String responseBody, List<Map<String, Object>> responseCaptures, String callName, List<String> warnings, Map<String, Object> rawOut) {
         Map<String, String> captured = new LinkedHashMap<>();
         for (Map<String, Object> cap : responseCaptures) {
             String name = str(cap.get("name"));
@@ -352,6 +395,7 @@ public class ExternalApiActionExecutor {
             if (name == null || jsonPath == null) continue;
             try {
                 Object extracted = JsonPath.read(responseBody, jsonPath);
+                if (rawOut != null) rawOut.put(name, extracted);
                 captured.put(name, extracted != null ? String.valueOf(extracted) : "");
             } catch (Exception e) {
                 log.warn("[ExternalApi] Capture '{}' (jsonPath {}) failed on call '{}': {}", name, jsonPath, callName, e.getMessage());
@@ -558,6 +602,84 @@ public class ExternalApiActionExecutor {
                 if (td == null) { td = new LinkedHashMap<>(); ticket.setTicketData(td); }
                 td.put(key, value);
             }
+            return true;
+        }
+        log.warn("[ExternalApi] Response mapping target '{}' doesn't start with 'ticket.' or 'this.' — ignored", target);
+        return false;
+    }
+
+    /** field_key -> field_type for every field_definitions row of the given entity_type ("ticket" or "workflow") — looked up once per real run, not per mapping, since a sequence can have several response mappings. */
+    private Map<String, String> fieldTypesByEntity(String entityType) {
+        Map<String, String> types = new HashMap<>();
+        for (FieldDefinitionsEntity f : fieldDefinitionsRepo.findByEntityTypeOrderByDisplayOrder(entityType)) {
+            types.put(f.getFieldKey(), f.getFieldType());
+        }
+        return types;
+    }
+
+    /**
+     * Turns a raw JsonPath.read() result into the list of readable text nodes to append to a
+     * "nodelist" field: a JSON array becomes one humanized node per element (e.g. one node per
+     * flight option); a single object/scalar becomes exactly one humanized node. Blank/null
+     * produces no nodes at all (caller treats that as "nothing to add", same as any other capture
+     * that resolved empty).
+     */
+    private List<String> toNodeStrings(Object raw) {
+        if (raw instanceof List<?> list) {
+            List<String> nodes = new ArrayList<>();
+            for (Object element : list) {
+                String node = humanizeJsonValue(element);
+                if (!node.isBlank()) nodes.add(node);
+            }
+            return nodes;
+        }
+        String node = humanizeJsonValue(raw);
+        return node.isBlank() ? List.of() : List.of(node);
+    }
+
+    /** "take json break it into human readable data as string" — flattens a JSON object/array into a plain "key: value, key2: value2" line instead of a raw {@code Map.toString()}/JSON dump. Recurses so a nested object/array reads inline rather than as a dump of its own. */
+    private String humanizeJsonValue(Object value) {
+        if (value == null) return "";
+        if (value instanceof Map<?, ?> map) {
+            StringBuilder sb = new StringBuilder();
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
+                if (sb.length() > 0) sb.append(", ");
+                sb.append(entry.getKey()).append(": ").append(humanizeJsonValue(entry.getValue()));
+            }
+            return sb.toString();
+        }
+        if (value instanceof List<?> list) {
+            StringBuilder sb = new StringBuilder();
+            for (Object element : list) {
+                if (sb.length() > 0) sb.append(", ");
+                sb.append(humanizeJsonValue(element));
+            }
+            return sb.toString();
+        }
+        return String.valueOf(value);
+    }
+
+    /** Appends (never overwrites) — "how to add node to the list": reads whatever is already stored under key (or starts a fresh list), adds every new node, writes the combined list back. */
+    @SuppressWarnings("unchecked")
+    private void appendNodes(Map<String, Object> data, String key, List<String> nodesToAdd) {
+        List<Object> nodes = data.get(key) instanceof List<?> existing ? new ArrayList<>(existing) : new ArrayList<>();
+        nodes.addAll(nodesToAdd);
+        data.put(key, nodes);
+    }
+
+    /** nodelist counterpart to {@link #applyTarget} — same target grammar ("this."/"ticket."), append-only semantics instead of overwrite. Returns true if it wrote to the ticket (caller must save), matching applyTarget's contract. */
+    private boolean applyNodelistTarget(WorkflowItemEntity item, TicketEntity ticket, String target, List<String> nodesToAdd) {
+        if (target.startsWith("this.")) {
+            Map<String, Object> fv = item.getFieldValues();
+            if (fv == null) { fv = new LinkedHashMap<>(); item.setFieldValues(fv); }
+            appendNodes(fv, target.substring("this.".length()), nodesToAdd);
+            return false;
+        }
+        if (target.startsWith("ticket.")) {
+            String key = target.substring("ticket.".length());
+            Map<String, Object> td = ticket.getTicketData();
+            if (td == null) { td = new LinkedHashMap<>(); ticket.setTicketData(td); }
+            appendNodes(td, key, nodesToAdd);
             return true;
         }
         log.warn("[ExternalApi] Response mapping target '{}' doesn't start with 'ticket.' or 'this.' — ignored", target);
