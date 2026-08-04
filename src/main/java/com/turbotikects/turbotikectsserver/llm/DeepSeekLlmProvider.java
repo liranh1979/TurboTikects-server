@@ -1,11 +1,13 @@
 package com.turbotikects.turbotikectsserver.llm;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.turbotikects.turbotikectsserver.dto.AiSettingTestResultDto;
 import com.turbotikects.turbotikectsserver.dto.LlmProviderInfoDto;
-import com.turbotikects.turbotikectsserver.dto.llm.LlmResponse;
 import com.turbotikects.turbotikectsserver.dto.llm.LlmStructure;
 import com.turbotikects.turbotikectsserver.entitys.AiSettingsEntity;
+import dev.langchain4j.exception.LangChain4jException;
+import dev.langchain4j.model.chat.ChatModel;
+import dev.langchain4j.model.chat.response.ChatResponse;
+import dev.langchain4j.model.openai.OpenAiChatModel;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
@@ -15,16 +17,14 @@ import java.net.URISyntaxException;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 
 @Slf4j
 @Component
 public class DeepSeekLlmProvider implements LlmProvider {
 
-    private static final String COMPLETIONS_URL = "https://api.deepseek.com/v1/chat/completions";
-    private static final String MODELS_URL      = "https://api.deepseek.com/v1/models";
+    private static final String BASE_URL   = "https://api.deepseek.com/v1";
+    private static final String MODELS_URL = "https://api.deepseek.com/v1/models";
 
     public static final LlmProviderInfoDto INFO =
             new LlmProviderInfoDto("deepseek", "DeepSeek", "deepseek-chat");
@@ -35,32 +35,21 @@ public class DeepSeekLlmProvider implements LlmProvider {
     }
 
     @Override
-    public String send(AiSettingsEntity settings, List<LlmStructure> messages) throws IOException, URISyntaxException, InterruptedException {
-        ObjectMapper mapper = new ObjectMapper();
-
-        Map<String, Object> payload = new HashMap<>();
-        payload.put("model", settings.getModelName());
-        payload.put("messages", messages);
-        payload.put("temperature", 0.3);
-
-        HttpRequest request = HttpRequest.newBuilder(new URI(COMPLETIONS_URL))
-                .header("Content-Type", "application/json")
-                .header("Authorization", "Bearer " + settings.getApiKey())
-                .POST(HttpRequest.BodyPublishers.ofString(mapper.writeValueAsString(payload)))
-                .build();
-
-        HttpResponse<String> response = HttpClient.newHttpClient().send(request, HttpResponse.BodyHandlers.ofString());
-        log.info("DeepSeek send → {}", response.statusCode());
-
-        if (response.statusCode() < 200 || response.statusCode() >= 300) {
-            throw new IOException("DeepSeek API error " + response.statusCode() + ": " + response.body());
+    public String send(AiSettingsEntity settings, List<LlmStructure> messages) throws IOException {
+        try {
+            // DeepSeek's API is OpenAI-compatible — reuses langchain4j-open-ai's OpenAiChatModel
+            // with DeepSeek's own baseUrl, per DeepSeek's own published integration docs.
+            ChatModel model = OpenAiChatModel.builder()
+                    .baseUrl(BASE_URL)
+                    .apiKey(settings.getApiKey())
+                    .modelName(settings.getModelName())
+                    .temperature(0.3)
+                    .build();
+            ChatResponse response = model.chat(LangChain4jSupport.toChatMessages(messages));
+            return LangChain4jSupport.extractText(response);
+        } catch (LangChain4jException e) {
+            throw LangChain4jSupport.toIOException("DeepSeek", e);
         }
-
-        LlmResponse llmResponse = mapper.readValue(response.body(), LlmResponse.class);
-        if (llmResponse.getChoices() != null && !llmResponse.getChoices().isEmpty()) {
-            return llmResponse.getChoices().get(0).getMessage().getContent();
-        }
-        return "";
     }
 
     @Override

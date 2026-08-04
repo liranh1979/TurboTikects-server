@@ -6,6 +6,10 @@ import com.turbotikects.turbotikectsserver.dto.AiSettingTestResultDto;
 import com.turbotikects.turbotikectsserver.dto.LlmProviderInfoDto;
 import com.turbotikects.turbotikectsserver.dto.llm.LlmStructure;
 import com.turbotikects.turbotikectsserver.entitys.AiSettingsEntity;
+import dev.langchain4j.exception.LangChain4jException;
+import dev.langchain4j.model.chat.ChatModel;
+import dev.langchain4j.model.chat.response.ChatResponse;
+import dev.langchain4j.model.ollama.OllamaChatModel;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
@@ -17,7 +21,6 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.util.List;
-import java.util.Map;
 import java.util.stream.Collectors;
 
 // Local model served by Ollama (no API key, no per-token cost) — the pre-built,
@@ -53,46 +56,31 @@ public class GemmaLlmProvider implements LlmProvider {
     }
 
     @Override
-    public String send(AiSettingsEntity settings, List<LlmStructure> messages) throws IOException, URISyntaxException, InterruptedException {
+    public String send(AiSettingsEntity settings, List<LlmStructure> messages) throws IOException {
         synchronized (OLLAMA_CALL_LOCK) {
-            ObjectMapper mapper = new ObjectMapper();
-
-            List<Map<String, String>> chatMessages = messages.stream()
-                    .map(m -> Map.of("role", m.getRole(), "content", m.getContent()))
-                    .collect(Collectors.toList());
-
-            // A real root cause found live (this explained empty/truncated output far better than
-            // an earlier concurrency theory did — GET /api/ps showed this model actually loaded
-            // with "context_length": 4096, Ollama's own default for it): a real-world prompt for a
-            // structured-extraction task (system rules + a real API response's flattened field
-            // list) can easily approach or exceed 4096 tokens on its own, leaving little or no room
-            // in the SAME window for the model to generate its JSON reply — which looks exactly
-            // like "the model returned almost nothing", because it effectively had nowhere left to
-            // write. Explicitly requesting a larger context via "options.num_ctx" fixes this at the
-            // call level without needing to edit the model's own Ollama configuration. Larger
-            // context uses more RAM, not more VRAM (this model already runs on CPU, size_vram: 0
-            // observed live), so this is a reasonable, low-risk tradeoff for correctness.
-            Map<String, Object> payload = Map.of(
-                    "model", settings.getModelName(),
-                    "messages", chatMessages,
-                    "stream", false,
-                    "options", Map.of("num_ctx", 16384)
-            );
-
-            HttpRequest request = HttpRequest.newBuilder(new URI(baseUrl + "/api/chat"))
-                    .header("Content-Type", "application/json")
-                    .POST(HttpRequest.BodyPublishers.ofString(mapper.writeValueAsString(payload)))
-                    .build();
-
-            HttpResponse<String> response = HttpClient.newHttpClient().send(request, HttpResponse.BodyHandlers.ofString());
-            log.info("Gemma (Ollama) send → {}", response.statusCode());
-
-            if (response.statusCode() < 200 || response.statusCode() >= 300) {
-                throw new IOException("Ollama API error " + response.statusCode() + ": " + response.body());
+            try {
+                // A real root cause found live (this explained empty/truncated output far better
+                // than an earlier concurrency theory did — GET /api/ps showed this model actually
+                // loaded with "context_length": 4096, Ollama's own default for it): a real-world
+                // prompt for a structured-extraction task (system rules + a real API response's
+                // flattened field list) can easily approach or exceed 4096 tokens on its own,
+                // leaving little or no room in the SAME window for the model to generate its JSON
+                // reply — which looks exactly like "the model returned almost nothing", because it
+                // effectively had nowhere left to write. Explicitly requesting a larger context via
+                // numCtx fixes this at the call level without needing to edit the model's own
+                // Ollama configuration. Larger context uses more RAM, not more VRAM (this model
+                // already runs on CPU, size_vram: 0 observed live), so this is a reasonable,
+                // low-risk tradeoff for correctness.
+                ChatModel model = OllamaChatModel.builder()
+                        .baseUrl(baseUrl)
+                        .modelName(settings.getModelName())
+                        .numCtx(16384)
+                        .build();
+                ChatResponse response = model.chat(LangChain4jSupport.toChatMessages(messages));
+                return LangChain4jSupport.extractText(response);
+            } catch (LangChain4jException e) {
+                throw LangChain4jSupport.toIOException("Ollama", e);
             }
-
-            OllamaChatResponse parsed = mapper.readValue(response.body(), OllamaChatResponse.class);
-            return parsed.getMessage() != null ? parsed.getMessage().getContent() : "";
         }
     }
 

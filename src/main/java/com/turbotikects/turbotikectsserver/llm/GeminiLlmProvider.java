@@ -6,6 +6,10 @@ import com.turbotikects.turbotikectsserver.dto.AiSettingTestResultDto;
 import com.turbotikects.turbotikectsserver.dto.LlmProviderInfoDto;
 import com.turbotikects.turbotikectsserver.dto.llm.LlmStructure;
 import com.turbotikects.turbotikectsserver.entitys.AiSettingsEntity;
+import dev.langchain4j.exception.LangChain4jException;
+import dev.langchain4j.model.chat.ChatModel;
+import dev.langchain4j.model.chat.response.ChatResponse;
+import dev.langchain4j.model.googleai.GoogleAiGeminiChatModel;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
@@ -15,10 +19,7 @@ import java.net.URISyntaxException;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -38,51 +39,19 @@ public class GeminiLlmProvider implements LlmProvider {
     }
 
     @Override
-    public String send(AiSettingsEntity settings, List<LlmStructure> messages) throws IOException, URISyntaxException, InterruptedException {
-        ObjectMapper mapper = new ObjectMapper();
-
-        String url = BASE_URL + "/v1beta/models/" + settings.getModelName() + ":generateContent?key=" + settings.getApiKey();
-
-        String systemContent = "";
-        List<Map<String, Object>> contents = new ArrayList<>();
-        for (LlmStructure msg : messages) {
-            if ("system".equals(msg.getRole())) {
-                systemContent = msg.getContent();
-            } else {
-                String geminiRole = "assistant".equals(msg.getRole()) ? "model" : msg.getRole();
-                contents.add(Map.of(
-                        "role", geminiRole,
-                        "parts", List.of(Map.of("text", msg.getContent()))
-                ));
-            }
+    public String send(AiSettingsEntity settings, List<LlmStructure> messages) throws IOException {
+        try {
+            // GoogleAiGeminiChatModel (1.0.0-beta5) has no baseUrl override — it always calls the
+            // same /v1beta surface this class already hit, so behavior is unchanged.
+            ChatModel model = GoogleAiGeminiChatModel.builder()
+                    .apiKey(settings.getApiKey())
+                    .modelName(settings.getModelName())
+                    .build();
+            ChatResponse response = model.chat(LangChain4jSupport.toChatMessages(messages));
+            return LangChain4jSupport.extractText(response);
+        } catch (LangChain4jException e) {
+            throw LangChain4jSupport.toIOException("Gemini", e);
         }
-
-        Map<String, Object> payload = new HashMap<>();
-        payload.put("contents", contents);
-        if (!systemContent.isEmpty()) {
-            payload.put("systemInstruction", Map.of("parts", List.of(Map.of("text", systemContent))));
-        }
-
-        HttpRequest request = HttpRequest.newBuilder(new URI(url))
-                .header("Content-Type", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(mapper.writeValueAsString(payload)))
-                .build();
-
-        HttpResponse<String> response = HttpClient.newHttpClient().send(request, HttpResponse.BodyHandlers.ofString());
-        log.info("Gemini send → {}", response.statusCode());
-
-        if (response.statusCode() < 200 || response.statusCode() >= 300) {
-            throw new IOException("Gemini API error " + response.statusCode() + ": " + response.body());
-        }
-
-        GeminiResponse geminiResponse = mapper.readValue(response.body(), GeminiResponse.class);
-        if (geminiResponse.getCandidates() != null && !geminiResponse.getCandidates().isEmpty()) {
-            List<Map<String, String>> parts = geminiResponse.getCandidates().get(0).getContent().getParts();
-            if (parts != null && !parts.isEmpty()) {
-                return parts.get(0).get("text");
-            }
-        }
-        return "";
     }
 
     @Override
@@ -145,26 +114,5 @@ public class GeminiLlmProvider implements LlmProvider {
         public void setName(String name) { this.name = name; }
         public List<String> getSupportedGenerationMethods() { return supportedGenerationMethods; }
         public void setSupportedGenerationMethods(List<String> m) { this.supportedGenerationMethods = m; }
-    }
-
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    private static class GeminiResponse {
-        private List<Candidate> candidates;
-        public List<Candidate> getCandidates() { return candidates; }
-        public void setCandidates(List<Candidate> candidates) { this.candidates = candidates; }
-    }
-
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    private static class Candidate {
-        private Content content;
-        public Content getContent() { return content; }
-        public void setContent(Content content) { this.content = content; }
-    }
-
-    @JsonIgnoreProperties(ignoreUnknown = true)
-    private static class Content {
-        private List<Map<String, String>> parts;
-        public List<Map<String, String>> getParts() { return parts; }
-        public void setParts(List<Map<String, String>> parts) { this.parts = parts; }
     }
 }

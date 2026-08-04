@@ -86,6 +86,20 @@ dependencies {
     implementation 'io.modelcontextprotocol.sdk:mcp-core'
     implementation 'io.modelcontextprotocol.sdk:mcp-json-jackson2'
 
+    // LangChain4j: replaces the hand-rolled java.net.http.HttpClient calls in llm/*Provider.java
+    // with a real SDK (llm/LangChain4jSupport.java + each provider's send()). Pinned explicitly
+    // rather than via langchain4j-bom, since the vendor-integration modules this app needs are at
+    // a genuinely different maturity than core/open-ai as of this writing (confirmed on Maven
+    // Central): langchain4j-core/langchain4j-open-ai are GA at 1.0.0, but langchain4j-anthropic/
+    // langchain4j-google-ai-gemini/langchain4j-ollama are still only published at 1.0.0-beta5 — a
+    // single BOM import wouldn't cleanly express that split. validateKey()/listModels() in every
+    // provider stay hand-rolled HTTP; LangChain4j has no "list models"/"validate this key" API.
+    implementation 'dev.langchain4j:langchain4j-core:1.0.0'
+    implementation 'dev.langchain4j:langchain4j-open-ai:1.0.0'          // OpenAI + DeepSeek + OpenRouter (all OpenAI-compatible via baseUrl)
+    implementation 'dev.langchain4j:langchain4j-anthropic:1.0.0-beta5'
+    implementation 'dev.langchain4j:langchain4j-google-ai-gemini:1.0.0-beta5' // Gemini (beta surface) only — GeminiStableLlmProvider stays hand-rolled
+    implementation 'dev.langchain4j:langchain4j-ollama:1.0.0-beta5'      // Gemma (local Ollama)
+
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
 }
 

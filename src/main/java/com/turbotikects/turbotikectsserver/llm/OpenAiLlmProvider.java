@@ -1,11 +1,13 @@
 package com.turbotikects.turbotikectsserver.llm;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.turbotikects.turbotikectsserver.dto.AiSettingTestResultDto;
 import com.turbotikects.turbotikectsserver.dto.LlmProviderInfoDto;
-import com.turbotikects.turbotikectsserver.dto.llm.LlmResponse;
 import com.turbotikects.turbotikectsserver.dto.llm.LlmStructure;
 import com.turbotikects.turbotikectsserver.entitys.AiSettingsEntity;
+import dev.langchain4j.exception.LangChain4jException;
+import dev.langchain4j.model.chat.ChatModel;
+import dev.langchain4j.model.chat.response.ChatResponse;
+import dev.langchain4j.model.openai.OpenAiChatModel;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
@@ -15,9 +17,7 @@ import java.net.URISyntaxException;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 
 @Slf4j
 @Component
@@ -36,32 +36,18 @@ public class OpenAiLlmProvider implements LlmProvider {
     }
 
     @Override
-    public String send(AiSettingsEntity settings, List<LlmStructure> messages) throws IOException, URISyntaxException, InterruptedException {
-        ObjectMapper mapper = new ObjectMapper();
-
-        Map<String, Object> payload = new HashMap<>();
-        payload.put("model", settings.getModelName());
-        payload.put("messages", messages);
-        payload.put("temperature", 0.3);
-
-        HttpRequest request = HttpRequest.newBuilder(new URI(COMPLETIONS_URL))
-                .header("Content-Type", "application/json")
-                .header("Authorization", "Bearer " + settings.getApiKey())
-                .POST(HttpRequest.BodyPublishers.ofString(mapper.writeValueAsString(payload)))
-                .build();
-
-        HttpResponse<String> response = HttpClient.newHttpClient().send(request, HttpResponse.BodyHandlers.ofString());
-        log.info("OpenAI send → {}", response.statusCode());
-
-        if (response.statusCode() < 200 || response.statusCode() >= 300) {
-            throw new IOException("OpenAI API error " + response.statusCode() + ": " + response.body());
+    public String send(AiSettingsEntity settings, List<LlmStructure> messages) throws IOException {
+        try {
+            ChatModel model = OpenAiChatModel.builder()
+                    .apiKey(settings.getApiKey())
+                    .modelName(settings.getModelName())
+                    .temperature(0.3)
+                    .build();
+            ChatResponse response = model.chat(LangChain4jSupport.toChatMessages(messages));
+            return LangChain4jSupport.extractText(response);
+        } catch (LangChain4jException e) {
+            throw LangChain4jSupport.toIOException("OpenAI", e);
         }
-
-        LlmResponse llmResponse = mapper.readValue(response.body(), LlmResponse.class);
-        if (llmResponse.getChoices() != null && !llmResponse.getChoices().isEmpty()) {
-            return llmResponse.getChoices().get(0).getMessage().getContent();
-        }
-        return "";
     }
 
     @Override

@@ -1,11 +1,13 @@
 package com.turbotikects.turbotikectsserver.llm;
 
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.turbotikects.turbotikectsserver.dto.AiSettingTestResultDto;
 import com.turbotikects.turbotikectsserver.dto.LlmProviderInfoDto;
-import com.turbotikects.turbotikectsserver.dto.llm.LlmResponse;
 import com.turbotikects.turbotikectsserver.dto.llm.LlmStructure;
 import com.turbotikects.turbotikectsserver.entitys.AiSettingsEntity;
+import dev.langchain4j.exception.LangChain4jException;
+import dev.langchain4j.model.chat.ChatModel;
+import dev.langchain4j.model.chat.response.ChatResponse;
+import dev.langchain4j.model.openai.OpenAiChatModel;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
@@ -15,7 +17,6 @@ import java.net.URISyntaxException;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -23,8 +24,8 @@ import java.util.Map;
 @Component
 public class OpenRouterLlmProvider implements LlmProvider {
 
-    private static final String COMPLETIONS_URL = "https://openrouter.ai/api/v1/chat/completions";
-    private static final String MODELS_URL      = "https://openrouter.ai/api/v1/models";
+    private static final String BASE_URL   = "https://openrouter.ai/api/v1";
+    private static final String MODELS_URL = "https://openrouter.ai/api/v1/models";
 
     public static final LlmProviderInfoDto INFO =
             new LlmProviderInfoDto("openrouter", "OpenRouter", "openai/gpt-4o");
@@ -35,34 +36,22 @@ public class OpenRouterLlmProvider implements LlmProvider {
     }
 
     @Override
-    public String send(AiSettingsEntity settings, List<LlmStructure> messages) throws IOException, URISyntaxException, InterruptedException {
-        ObjectMapper mapper = new ObjectMapper();
-
-        Map<String, Object> payload = new HashMap<>();
-        payload.put("model", settings.getModelName());
-        payload.put("messages", messages);
-        payload.put("temperature", 0.3);
-
-        HttpRequest request = HttpRequest.newBuilder(new URI(COMPLETIONS_URL))
-                .header("Content-Type", "application/json")
-                .header("Authorization", "Bearer " + settings.getApiKey())
-                .header("HTTP-Referer", "https://turbotikects.app")
-                .header("X-Title", "TurboTikects")
-                .POST(HttpRequest.BodyPublishers.ofString(mapper.writeValueAsString(payload)))
-                .build();
-
-        HttpResponse<String> response = HttpClient.newHttpClient().send(request, HttpResponse.BodyHandlers.ofString());
-        log.info("OpenRouter send → {}", response.statusCode());
-
-        if (response.statusCode() < 200 || response.statusCode() >= 300) {
-            throw new IOException("OpenRouter API error " + response.statusCode() + ": " + response.body());
+    public String send(AiSettingsEntity settings, List<LlmStructure> messages) throws IOException {
+        try {
+            // OpenRouter's API is OpenAI-compatible — reuses langchain4j-open-ai's OpenAiChatModel
+            // with OpenRouter's own baseUrl + the same HTTP-Referer/X-Title headers it already sent.
+            ChatModel model = OpenAiChatModel.builder()
+                    .baseUrl(BASE_URL)
+                    .apiKey(settings.getApiKey())
+                    .modelName(settings.getModelName())
+                    .temperature(0.3)
+                    .customHeaders(Map.of("HTTP-Referer", "https://turbotikects.app", "X-Title", "TurboTikects"))
+                    .build();
+            ChatResponse response = model.chat(LangChain4jSupport.toChatMessages(messages));
+            return LangChain4jSupport.extractText(response);
+        } catch (LangChain4jException e) {
+            throw LangChain4jSupport.toIOException("OpenRouter", e);
         }
-
-        LlmResponse llmResponse = mapper.readValue(response.body(), LlmResponse.class);
-        if (llmResponse.getChoices() != null && !llmResponse.getChoices().isEmpty()) {
-            return llmResponse.getChoices().get(0).getMessage().getContent();
-        }
-        return "";
     }
 
     @Override
