@@ -40,11 +40,17 @@ public class OpenRouterLlmProvider implements LlmProvider {
         try {
             // OpenRouter's API is OpenAI-compatible — reuses langchain4j-open-ai's OpenAiChatModel
             // with OpenRouter's own baseUrl + the same HTTP-Referer/X-Title headers it already sent.
+            // "json_object" forces JSON-mode constrained decoding (see GemmaLlmProvider's identical
+            // fix for the fuller reasoning) — OpenRouter passes response_format through to whichever
+            // underlying model was actually selected, and per OpenRouter's own docs, a model that
+            // doesn't support it gets the parameter silently ignored rather than erroring, so this
+            // is a safe default across OpenRouter's whole catalog, not just JSON-mode-capable models.
             ChatModel model = OpenAiChatModel.builder()
                     .baseUrl(BASE_URL)
                     .apiKey(settings.getApiKey())
                     .modelName(settings.getModelName())
                     .temperature(0.3)
+                    .responseFormat("json_object")
                     .customHeaders(Map.of("HTTP-Referer", "https://turbotikects.app", "X-Title", "TurboTikects"))
                     .build();
             ChatResponse response = model.chat(LangChain4jSupport.toChatMessages(messages));

@@ -3,6 +3,7 @@ package com.turbotikects.turbotikectsserver.services;
 import com.jayway.jsonpath.JsonPath;
 import com.turbotikects.turbotikectsserver.dto.AiRefineCallInputDto;
 import com.turbotikects.turbotikectsserver.dto.WorkflowActionTestResult;
+import com.turbotikects.turbotikectsserver.entitys.AiSettingsEntity;
 import com.turbotikects.turbotikectsserver.entitys.FieldDefinitionsEntity;
 import com.turbotikects.turbotikectsserver.entitys.TicketActivityLogEntity;
 import com.turbotikects.turbotikectsserver.entitys.TicketEntity;
@@ -42,7 +43,8 @@ import java.util.regex.Pattern;
  *                "headers": [{"key","valueTemplate"}],
  *                "auth": {"type":"none"|"bearer"|"api_key"|"basic",
  *                         "tokenEnc"/"usernameEnc"/"passwordEnc" (server-managed), "headerName"},
- *                "bodyTemplate", "responseCaptures": [{"name","jsonPath"}] } ],
+ *                "bodyTemplate", "responseCaptures": [{"name","mode":"jsonpath"(default)|"llm",
+ *                                                       "jsonPath" (mode=jsonpath), "llmInstruction" (mode=llm)}] } ],
  *   "fieldMappings": { "request": [{"placeholder","ticketField"}],
  *                       "response": [{"captureName","target"}] } }
  * }
@@ -82,15 +84,18 @@ public class ExternalApiActionExecutor {
     private final AdminInboxService adminInboxService;
     private final WorkflowService workflowService;
     private final FieldDefinitionsRepository fieldDefinitionsRepo;
+    private final AiSettingsService aiSettingsService;
 
     // @Lazy on WorkflowService only — mirrors the WorkflowService<->ApprovalService cycle fix
     // (WorkflowService.activateItem dispatches INTO this class, this class calls back into
-    // WorkflowService.onItemCompleted when the sequence finishes).
+    // WorkflowService.onItemCompleted when the sequence finishes). No cycle with AiSettingsService —
+    // it never references this class.
     public ExternalApiActionExecutor(WorkflowItemRepository itemRepo, TicketRepository ticketRepo,
                                       TicketActivityLogRepository activityLogRepo,
                                       AesEncryptionUtils aes, AdminInboxService adminInboxService,
                                       @Lazy WorkflowService workflowService,
-                                      FieldDefinitionsRepository fieldDefinitionsRepo) {
+                                      FieldDefinitionsRepository fieldDefinitionsRepo,
+                                      AiSettingsService aiSettingsService) {
         this.itemRepo = itemRepo;
         this.ticketRepo = ticketRepo;
         this.activityLogRepo = activityLogRepo;
@@ -98,6 +103,7 @@ public class ExternalApiActionExecutor {
         this.adminInboxService = adminInboxService;
         this.workflowService = workflowService;
         this.fieldDefinitionsRepo = fieldDefinitionsRepo;
+        this.aiSettingsService = aiSettingsService;
     }
 
     /** Called from WorkflowService.activateItem the moment an external_api item becomes in_progress. Runs on a background thread — never blocks the caller's transaction with network I/O. */
@@ -381,30 +387,76 @@ public class ExternalApiActionExecutor {
         }
     }
 
-    /** The one real JsonPath-extraction step (Jayway JsonPath, {@code JsonPath.read}) — evaluates each configured {name,jsonPath} capture against a response body and returns name→value. Shared by the live call path above and {@link #evaluateResponseCaptures} below (re-evaluating an already-fetched response, no new call), so both ever have exactly one implementation of "how a capture resolves." */
+    /** The extraction dispatch step — evaluates each configured capture against a response body and returns name→value, one of two ways depending on that capture's "mode". Shared by the live call path above and {@link #evaluateResponseCaptures} below (re-evaluating an already-fetched response, no new call), so both ever have exactly one implementation of "how a capture resolves." */
     private Map<String, String> applyResponseCaptures(String responseBody, List<Map<String, Object>> responseCaptures, String callName, List<String> warnings) {
         return applyResponseCaptures(responseBody, responseCaptures, callName, warnings, null);
     }
 
-    /** @param rawOut when non-null, also collects each capture's RAW (pre-stringification) JsonPath.read result — needed to humanize a captured JSON object/array into nodelist entries; see runSequence. */
+    /** @param rawOut when non-null, also collects each capture's RAW (pre-stringification) extracted result — needed to humanize a captured JSON object/array into nodelist entries; see runSequence. */
     private Map<String, String> applyResponseCaptures(String responseBody, List<Map<String, Object>> responseCaptures, String callName, List<String> warnings, Map<String, Object> rawOut) {
         Map<String, String> captured = new LinkedHashMap<>();
         for (Map<String, Object> cap : responseCaptures) {
             String name = str(cap.get("name"));
-            String jsonPath = str(cap.get("jsonPath"));
-            if (name == null || jsonPath == null) continue;
-            try {
-                Object extracted = JsonPath.read(responseBody, jsonPath);
-                if (rawOut != null) rawOut.put(name, extracted);
-                captured.put(name, extracted != null ? String.valueOf(extracted) : "");
-            } catch (Exception e) {
-                log.warn("[ExternalApi] Capture '{}' (jsonPath {}) failed on call '{}': {}", name, jsonPath, callName, e.getMessage());
-                if (warnings != null) {
-                    warnings.add("Capture '" + name + "' (jsonPath " + jsonPath + ") on call '" + callName + "' matched nothing in the response");
-                }
+            if (name == null) continue;
+            // Absent "mode" behaves exactly as "jsonpath" — every capture saved before this option
+            // existed must keep resolving identically.
+            String mode = Optional.ofNullable(str(cap.get("mode"))).orElse("jsonpath");
+            if ("llm".equals(mode)) {
+                applyLlmCapture(responseBody, cap, name, callName, warnings, rawOut, captured);
+            } else {
+                applyJsonPathCapture(responseBody, cap, name, callName, warnings, rawOut, captured);
             }
         }
         return captured;
+    }
+
+    /** The original (unchanged) JsonPath-extraction step (Jayway JsonPath, {@code JsonPath.read}). */
+    private void applyJsonPathCapture(String responseBody, Map<String, Object> cap, String name, String callName,
+                                       List<String> warnings, Map<String, Object> rawOut, Map<String, String> captured) {
+        String jsonPath = str(cap.get("jsonPath"));
+        if (jsonPath == null) return;
+        try {
+            Object extracted = JsonPath.read(responseBody, jsonPath);
+            if (rawOut != null) rawOut.put(name, extracted);
+            captured.put(name, extracted != null ? String.valueOf(extracted) : "");
+        } catch (Exception e) {
+            log.warn("[ExternalApi] Capture '{}' (jsonPath {}) failed on call '{}': {}", name, jsonPath, callName, e.getMessage());
+            if (warnings != null) {
+                warnings.add("Capture '" + name + "' (jsonPath " + jsonPath + ") on call '" + callName + "' matched nothing in the response");
+            }
+        }
+    }
+
+    /**
+     * New "AI: describe what to extract" mode — the admin wrote a plain-language instruction once
+     * (e.g. "the cheapest flight's total price") instead of a JSONPath; this calls the currently-
+     * active AI provider LIVE, every time this capture needs to resolve, including at real ticket-
+     * execution time (a deliberate, explicit admin request — every other capture/humanization
+     * mechanism in this class stays 100% deterministic on purpose; this one mode is the sole,
+     * intentional exception). No active provider, or any extraction failure, degrades exactly like
+     * a JsonPath miss — a warning, never a crash of the whole call/item.
+     */
+    private void applyLlmCapture(String responseBody, Map<String, Object> cap, String name, String callName,
+                                  List<String> warnings, Map<String, Object> rawOut, Map<String, String> captured) {
+        String instruction = str(cap.get("llmInstruction"));
+        if (instruction == null || instruction.isBlank()) return;
+        AiSettingsEntity aiSettings = aiSettingsService.getActiveAi();
+        if (aiSettings == null) {
+            log.warn("[ExternalApi] Capture '{}' (llm) on call '{}' skipped — no active AI provider configured", name, callName);
+            if (warnings != null) {
+                warnings.add("Capture '" + name + "' (AI extraction) on call '" + callName + "' was skipped — no active AI provider is configured");
+            }
+            return;
+        }
+        Optional<String> value = aiSettingsService.extractValueWithLlm(aiSettings, responseBody, instruction);
+        if (value.isEmpty()) {
+            if (warnings != null) {
+                warnings.add("Capture '" + name + "' (AI extraction) on call '" + callName + "' — the AI could not find a value in the response");
+            }
+            return;
+        }
+        if (rawOut != null) rawOut.put(name, value.get());
+        captured.put(name, value.get());
     }
 
     /**

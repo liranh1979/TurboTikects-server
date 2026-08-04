@@ -1,5 +1,7 @@
 package com.turbotikects.turbotikectsserver.services;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.turbotikects.turbotikectsserver.dto.AiSettingTestResultDto;
 import com.turbotikects.turbotikectsserver.dto.AiSettingsDto;
 import com.turbotikects.turbotikectsserver.dto.llm.LlmStructure;
@@ -145,6 +147,53 @@ public class AiSettingsService {
 
     public List<String> listModels(String providerName, String apiKey) throws URISyntaxException, IOException, InterruptedException {
         return llmProviderFactory.getProvider(providerName).listModels(apiKey);
+    }
+
+    // Real API responses can be large; capped for the same reason ExternalApiActionExecutor caps
+    // its own trace/preview fields — bounded prompt size regardless of provider/model.
+    private static final int MAX_LLM_EXTRACTION_RESPONSE_CHARS = 200_000;
+
+    /**
+     * Per-capture "AI: describe what to extract" mode (ExternalApiActionExecutor's "llm"-mode
+     * response captures) — an admin writes a plain-language instruction once, and this is called
+     * LIVE every time that capture needs to resolve, both in the wizard's "Verify Captures"/"Test
+     * this call now" and at real ticket-execution time. Deliberately much simpler than the design-
+     * time JSONPath-discovery prompts in TemplateService (no flatten/compact/path-list scaffolding)
+     * — it's answering a question about a real value, not proposing a path a human will review, so
+     * the model just reads the real response directly and answers directly. Every failure mode
+     * (bad JSON reply, network error, timeout, rate limit exhausted) is caught here and reported as
+     * an empty Optional — callers treat that identically to a JsonPath capture that "matched
+     * nothing" (a graceful warning, never a crash), so no new exception type needs to thread through
+     * ExternalApiActionExecutor.
+     */
+    public Optional<String> extractValueWithLlm(AiSettingsEntity aiSettings, String responseBody, String instruction) {
+        try {
+            String capped = responseBody != null && responseBody.length() > MAX_LLM_EXTRACTION_RESPONSE_CHARS
+                    ? responseBody.substring(0, MAX_LLM_EXTRACTION_RESPONSE_CHARS) + "…" : responseBody;
+
+            LlmStructure system = new LlmStructure();
+            system.setRole("system");
+            system.setContent("""
+                    You extract a single value from a JSON (or plain-text) API response, following \
+                    the admin's instruction exactly. Return ONLY a strict JSON object of the form \
+                    {"value": <the extracted value>} — no markdown, no explanation, no extra keys. \
+                    If the value genuinely cannot be found in the response, return {"value": null}. \
+                    The value must be a JSON string, number, or boolean — never an object or array.
+                    """);
+
+            LlmStructure user = new LlmStructure();
+            user.setRole("user");
+            user.setContent("Instruction: " + instruction + "\n\nAPI response:\n" + (capped == null ? "" : capped));
+
+            String raw = sendLlmRequest(aiSettings, List.of(system, user));
+            String cleaned = raw.replaceAll("(?s)```[a-zA-Z]*\\n?", "").replace("```", "").trim();
+            Map<String, Object> parsed = new ObjectMapper().readValue(cleaned, new TypeReference<>() {});
+            Object value = parsed.get("value");
+            return value == null ? Optional.empty() : Optional.of(String.valueOf(value));
+        } catch (Exception e) {
+            log.warn("[AiSettingsService] extractValueWithLlm failed for instruction '{}': {}", instruction, e.getMessage());
+            return Optional.empty();
+        }
     }
 
 }

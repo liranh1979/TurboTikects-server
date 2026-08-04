@@ -40,6 +40,8 @@ out/
 src/main/resources/static/
 /.claude/worktrees/agent-a3b760e0a58b78142/
 /.claude/worktrees/agent-afd349f46d0bfe3a4/
+/.claude/worktrees/agent-a77a27c44e684f120/
+/.claude/worktrees/agent-ad574a53611480a9d/
 /docker/.last_image
 /uploads/2f/2f9cd3fc2531a7ed08c60b949cece25c43c0f32eb9109216b09c11136a8c8843.ps1
 /uploads/44/44d2ed9c311eb1dc78530dd37cff38531cf8f75325e989b4aaefd789a2e63d72.png

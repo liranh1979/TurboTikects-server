@@ -17,4 +17,9 @@ public class AiRefineResponseMappingRequestDto {
     private List<AiRefineCallInputDto> calls;
     /** external_api only — the "api_action_builder" session Steps 1-3 already used; null for mcp_tool (that branch never sends one, unchanged one-shot behavior) or when called standalone. */
     private Long sessionId;
+    // Optional — a specific, per-run ask typed fresh in the Response Mapping step (e.g. "the
+    // cheapest flight's total price and departure time"), on top of (not replacing) the broad
+    // "intent" set back in Step 1. Blank/null for a plain "Map Response with AI" click with
+    // nothing typed — must produce a byte-identical prompt to before this field existed.
+    private String specificAsk;
 }

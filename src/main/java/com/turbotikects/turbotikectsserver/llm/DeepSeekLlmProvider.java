@@ -39,11 +39,15 @@ public class DeepSeekLlmProvider implements LlmProvider {
         try {
             // DeepSeek's API is OpenAI-compatible — reuses langchain4j-open-ai's OpenAiChatModel
             // with DeepSeek's own baseUrl, per DeepSeek's own published integration docs.
+            // "json_object" forces JSON-mode constrained decoding (DeepSeek's docs confirm the
+            // same OpenAI-compatible response_format param) — see GemmaLlmProvider's identical fix
+            // for the fuller reasoning.
             ChatModel model = OpenAiChatModel.builder()
                     .baseUrl(BASE_URL)
                     .apiKey(settings.getApiKey())
                     .modelName(settings.getModelName())
                     .temperature(0.3)
+                    .responseFormat("json_object")
                     .build();
             ChatResponse response = model.chat(LangChain4jSupport.toChatMessages(messages));
             return LangChain4jSupport.extractText(response);

@@ -8,6 +8,7 @@ import com.turbotikects.turbotikectsserver.dto.llm.LlmStructure;
 import com.turbotikects.turbotikectsserver.entitys.AiSettingsEntity;
 import dev.langchain4j.exception.LangChain4jException;
 import dev.langchain4j.model.chat.ChatModel;
+import dev.langchain4j.model.chat.request.ResponseFormat;
 import dev.langchain4j.model.chat.response.ChatResponse;
 import dev.langchain4j.model.ollama.OllamaChatModel;
 import lombok.extern.slf4j.Slf4j;
@@ -68,13 +69,26 @@ public class GemmaLlmProvider implements LlmProvider {
                 // reply — which looks exactly like "the model returned almost nothing", because it
                 // effectively had nowhere left to write. Explicitly requesting a larger context via
                 // numCtx fixes this at the call level without needing to edit the model's own
-                // Ollama configuration. Larger context uses more RAM, not more VRAM (this model
-                // already runs on CPU, size_vram: 0 observed live), so this is a reasonable,
-                // low-risk tradeoff for correctness.
+                // Ollama configuration. Larger context uses more RAM (or VRAM now that this
+                // container runs on GPU — see docker-compose.yml's nvidia device reservation), so
+                // this is a reasonable, low-risk tradeoff for correctness either way.
+                //
+                // A separate, distinct problem from context size: every AI method in TemplateService
+                // asks for "ONLY the JSON" in prose and hopes the model complies — a real, GPU speed
+                // has NO bearing on this (faster tokens/sec doesn't make a small model more
+                // grammatically disciplined). ".format(\"json\")" is Ollama's own grammar-constrained
+                // decoding mode — the token sampler itself is restricted so it can ONLY ever emit
+                // syntactically valid JSON, eliminating "The AI did not return valid JSON" (a parse
+                // failure on genuinely malformed output, e.g. trailing prose or an unclosed brace) as
+                // a failure mode entirely. It does NOT guarantee the JSON matches our expected shape
+                // (still just as capable of, say, an empty array) — that's the sanitize*/MANDATORY
+                // CHECK prompt rules' job, unchanged — but the specific "isn't even valid JSON" class
+                // of error this fixes is exactly the one reported live.
                 ChatModel model = OllamaChatModel.builder()
                         .baseUrl(baseUrl)
                         .modelName(settings.getModelName())
                         .numCtx(16384)
+                        .responseFormat(ResponseFormat.JSON)
                         .build();
                 ChatResponse response = model.chat(LangChain4jSupport.toChatMessages(messages));
                 return LangChain4jSupport.extractText(response);

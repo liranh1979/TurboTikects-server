@@ -1186,11 +1186,29 @@ public class TemplateService {
                     "The AI did not return valid JSON — try a different AI provider/model.");
         }
 
+        Set<String> existingKeys = existingWorkflowFieldKeys(dto.getWorkflowFields());
+        List<Map<String, Object>> missingWorkflowFields = sanitizeMissingWorkflowFields(draft, existingKeys);
+
+        // A real bug found live: "Map Fields with AI" always came back with an EMPTY mapping table
+        // whenever the model (correctly, per this method's own system prompt) invented a brand-new
+        // "this.<key>" for a field that doesn't exist yet — sanitizeRequestMappings only ever
+        // whitelisted a "this.<key>" mapping against the PRE-EXISTING workflow field catalog, so
+        // every mapping paired with a missingWorkflowFields suggestion was silently dropped. Since
+        // this is the common case for a brand-new action item (no custom workflow fields exist
+        // yet), the mapping table came back empty essentially every time, looking exactly like the
+        // feature "not working" rather than a partial, still-useful result. The two lists are meant
+        // to travel together — WorkflowFieldSuggestions/missingFieldUsedBy on the frontend already
+        // expects a mapping row to exist pointing at a not-yet-created suggested field, so the
+        // suggestion card can show what it's used by. Fix: also allow any key this same AI response
+        // just proposed in missingWorkflowFields, not only ones that already exist.
+        Set<String> allowedWorkflowKeys = new HashSet<>(existingKeys);
+        for (Map<String, Object> suggestion : missingWorkflowFields) {
+            if (suggestion.get("suggestedFieldKey") instanceof String key) allowedWorkflowKeys.add(key);
+        }
+
         List<Object> rawMappings = new ArrayList<>();
         if (draft.get("requestMappings") instanceof List<?> list) rawMappings.addAll(list);
-        Set<String> existingKeys = existingWorkflowFieldKeys(dto.getWorkflowFields());
-        List<Object> requestMappings = sanitizeRequestMappings(rawMappings, dto.getTicketFields(), existingKeys);
-        List<Map<String, Object>> missingWorkflowFields = sanitizeMissingWorkflowFields(draft, existingKeys);
+        List<Object> requestMappings = sanitizeRequestMappings(rawMappings, dto.getTicketFields(), allowedWorkflowKeys);
 
         aiChatService.appendMessage(sessionId, "user", user.getContent());
         aiChatService.appendMessage(sessionId, "assistant", cleaned);
@@ -1217,6 +1235,18 @@ public class TemplateService {
      * intent/field-mapping context. For mcp_tool the frontend never sends a sessionId (that branch
      * is explicitly unchanged), so this simply creates a fresh single-turn session each call, same
      * one-shot behavior as before.
+     *
+     * A real bug found live via admin debugging: this used to be ONE combined LLM call asking the
+     * model to extract captures, write summaries, AND choose target fields (with a whole
+     * ticket-vs-workflow "MANDATORY CHECK" decision tree) all at once — 20+ effectively-simultaneous
+     * instructions once bundled sub-rules are counted, too many for a small local model to reliably
+     * follow together. Split into two smaller, focused, SESSION-CONTINUING calls instead — mirrors
+     * the same split already proven on the request side of this wizard (aiDraftCallSkeleton vs.
+     * aiMapCallFields): {@link #aiExtractResponseCaptures} finds/summarizes captures only, then
+     * {@link #aiMapResponseCaptures} maps just those captures to targets only, reusing
+     * aiMapCallFields' already-proven prompt shape almost verbatim. Two round-trips instead of one —
+     * an accepted latency cost for reliability, not a defect. The public shape returned here is
+     * unchanged either way, so no caller (frontend or otherwise) needed to change.
      */
     public Map<String, Object> aiRefineResponseMapping(AiRefineResponseMappingRequestDto dto, Integer userId)
             throws IOException, URISyntaxException, InterruptedException {
@@ -1233,9 +1263,6 @@ public class TemplateService {
             sessionId = aiChatService.createSession(userId, "api_action_builder", null).getId();
         }
         List<LlmStructure> history = aiChatService.getMessageHistory(sessionId, userId);
-
-        String fieldList = workflowFieldsJson(dto.getTicketFields());
-        String workflowFieldList = workflowFieldsJson(dto.getWorkflowFields());
 
         ObjectMapper mapper = new ObjectMapper();
 
@@ -1264,6 +1291,85 @@ public class TemplateService {
         }
 
         boolean isMcp = "mcp_tool".equals(dto.getType());
+        Set<String> existingCallIds = new HashSet<>();
+        for (AiRefineCallInputDto c : dto.getCalls()) {
+            if (c.getId() != null) existingCallIds.add(c.getId());
+        }
+
+        ExtractionResult extraction = aiExtractResponseCaptures(
+                aiSettings, history, mapper, dto.getIntent(), dto.getSpecificAsk(), dto.getDocumentation(),
+                callsJson, isMcp, existingCallIds);
+        int totalCaptures = extraction.calls().stream()
+                .mapToInt(c -> ((List<?>) c.get("responseCaptures")).size()).sum();
+        // Mirrors evaluateResponseCaptures' precedent elsewhere in this codebase: a totally-empty
+        // result must be a visible error, not a silent no-op the admin has to notice is wrong.
+        if (totalCaptures == 0) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "The AI could not find any capturable values in the response(s) — try a shorter/clearer intent, or a different AI provider/model.");
+        }
+        aiChatService.appendMessage(sessionId, "user", extraction.userContent());
+        aiChatService.appendMessage(sessionId, "assistant", extraction.cleanedJson());
+
+        // Continuing the SAME session for Call 2 — built by locally appending Call 1's own turns to
+        // the in-memory list already loaded above, rather than re-querying aiChatService.
+        // getMessageHistory: that method just filters persisted rows to non-system roles in
+        // insertion order, so a second DB round-trip (plus its redundant session-ownership check)
+        // would produce an object-equivalent list for no benefit — nothing about the session's
+        // validity could have changed between these two calls within the same request.
+        List<LlmStructure> historyForMapping = new ArrayList<>(history);
+        LlmStructure extractionUserTurn = new LlmStructure();
+        extractionUserTurn.setRole("user");
+        extractionUserTurn.setContent(extraction.userContent());
+        LlmStructure extractionAssistantTurn = new LlmStructure();
+        extractionAssistantTurn.setRole("assistant");
+        extractionAssistantTurn.setContent(extraction.cleanedJson());
+        historyForMapping.add(extractionUserTurn);
+        historyForMapping.add(extractionAssistantTurn);
+
+        String fieldList = workflowFieldsJson(dto.getTicketFields());
+        String workflowFieldList = workflowFieldsJson(dto.getWorkflowFields());
+
+        List<Map<String, Object>> responseMappings = new ArrayList<>();
+        List<Map<String, Object>> missingWorkflowFields = new ArrayList<>();
+        try {
+            MappingResult mapping = aiMapResponseCaptures(
+                    aiSettings, historyForMapping, mapper, dto.getIntent(), dto.getSpecificAsk(),
+                    fieldList, workflowFieldList, extraction.calls(),
+                    existingWorkflowFieldKeys(dto.getWorkflowFields()));
+            responseMappings = mapping.responseMappings();
+            missingWorkflowFields = mapping.missingWorkflowFields();
+            aiChatService.appendMessage(sessionId, "user", mapping.userContent());
+            aiChatService.appendMessage(sessionId, "assistant", mapping.cleanedJson());
+        } catch (ResponseStatusException e) {
+            // Partial success (mirrors ExternalApiActionExecutor.evaluateResponseCaptures' graceful-
+            // degradation design): the captures themselves are still genuinely useful even if
+            // targeting failed — the admin can still see/verify them and hand-map targets via the
+            // existing manual table, rather than losing Call 1's entire result to a Call 2 hiccup.
+            log.warn("[TemplateService] aiRefineResponseMapping: mapping step failed after a successful extraction ({} captures) — returning captures with empty fieldMappings. {}",
+                    totalCaptures, e.getMessage());
+        }
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("calls", extraction.calls());
+        result.put("fieldMappings", Map.of("response", responseMappings));
+        result.put("missingWorkflowFields", missingWorkflowFields);
+        result.put("sessionId", sessionId);
+        return result;
+    }
+
+    private record ExtractionResult(List<Map<String, Object>> calls, String userContent, String cleanedJson) {}
+
+    /**
+     * Call 1 of the aiRefineResponseMapping split — extraction ONLY, nothing about targets.
+     * Ticket/workflow field catalogs aren't even sent here; they have nothing to do with deciding
+     * WHICH values are worth capturing or WHERE they live in the response.
+     */
+    @SuppressWarnings("unchecked")
+    private ExtractionResult aiExtractResponseCaptures(
+            AiSettingsEntity aiSettings, List<LlmStructure> history, ObjectMapper mapper,
+            String intent, String specificAsk, String documentation, String callsJson,
+            boolean isMcp, Set<String> existingCallIds)
+            throws IOException, URISyntaxException, InterruptedException {
         String pathKey = isMcp ? "resultPath" : "jsonPath";
 
         LlmStructure system = new LlmStructure();
@@ -1278,28 +1384,28 @@ public class TemplateService {
                 see a JSON array of every real {"path": ..., "value": ...} pair available in that \
                 response (already flattened for you — you never need to construct or guess a path \
                 yourself, only COPY one verbatim from this list). Some entries additionally have \
-                "isRepeatableList": true — these represent a whole JSON array (see the nodelist rule \
-                below for when to copy one of THESE paths instead of a plain leaf path). If a call's rawResponse couldn't \
-                be flattened (plain text, not JSON), you'll see the raw text instead — in that case \
-                "$.text" is the only usable __PATH_KEY__ for it. Produce a JSON object with EXACTLY \
+                "isRepeatableList": true — these represent a whole JSON array (see the whole-array \
+                rule below for when to copy one of THESE paths instead of a plain leaf path). If a \
+                call's rawResponse couldn't be flattened (plain text, not JSON), you'll see the raw \
+                text instead — in that case "$.text" is the only usable __PATH_KEY__ for it. Your \
+                ONLY job here is extraction — deciding WHICH values are worth capturing and WHERE \
+                they live in the response. You are NOT deciding where each captured value should be \
+                stored on the ticket/workflow — that happens in a separate step, so do not return \
+                any field-mapping or target information here. Produce a JSON object with EXACTLY \
                 this shape (no markdown, no explanation, ONLY the JSON):
                 {
                   "calls": [
                     {
                       "id": "must be copied byte-for-byte from the matching input call's id — never invent, omit, or reorder",
-                      "responseCaptures": [{"name": "camelCaseName", "__PATH_KEY__": "copied EXACTLY, character-for-character, from one 'path' entry given for this call"}]
+                      "responseCaptures": [{"name": "camelCaseName", "__PATH_KEY__": "copied EXACTLY, character-for-character, from one 'path' entry given for this call", "summary": "one short (max 2 sentences) human-readable description of what this captured value actually IS"}]
                     }
-                  ],
-                  "fieldMappings": {
-                    "response": [{"captureName": "must match a name in some call's responseCaptures", "target": "ticket.<field> or this.<workflow field>"}]
-                  },
-                  "missingWorkflowFields": [
-                    {"suggestedFieldKey": "snake_case_key", "suggestedLabel": "Human Label", "suggestedFieldType": "text"|"number"|"date"|"checkbox"}
                   ]
                 }
                 Rules:
                 - Only include an entry in "calls" for an input call that had real path/value data (or
-                  raw text) available — if a call has nothing, omit it entirely rather than guessing.
+                  raw text) available, and only include a responseCapture you're genuinely confident
+                  is a real, useful value — if a call has nothing worth capturing, omit it entirely
+                  rather than guessing.
                 - Every "__PATH_KEY__" value MUST be copied EXACTLY from one of the given "path" \
                   entries for that call — do not shorten it, add an index, remove one, or otherwise \
                   modify it. Copying the wrong entry is a real, common mistake — when two entries \
@@ -1312,63 +1418,47 @@ public class TemplateService {
                   If capturing a price/cost, prefer a path literally containing "price" or "cost" \
                   closest to the top of its containing object over a deeper or unrelated one.
                 - Do NOT return "url", "method", "headers", "auth", "bodyTemplate", "toolName", or \
-                  "argumentMappings" for any call — you are only ever refining the response-capture \
-                  side of an already-configured call, never how the request itself is made. Any such \
+                  "argumentMappings" for any call, and do NOT return "fieldMappings" or \
+                  "missingWorkflowFields" at all — you are only ever extracting response captures \
+                  here, never how the request is made and never where a value is targeted. Any such \
                   key you include will be discarded anyway.
                 - responseCaptures[].name (the name paired with each "__PATH_KEY__") MUST contain \
                   ONLY lowercase letters, numbers, and underscores — no dots, dashes, or spaces.
-                - fieldMappings.response[].target selection is EXACTLY as strict as the path rule \
-                  above — a wrong target is as real a mistake as a wrong path. Read the capture's \
-                  actual meaning (from its name and the real value you captured) and choose a target \
-                  whose own name means the SAME thing — e.g. a captured price/cost must never map to \
-                  a field about a location/airport/destination, and vice versa; if you cannot \
-                  honestly say the target field's name and the capture's meaning match, it is WRONG, \
-                  even if that ticket field happens to be in the available list. Ticket fields \
-                  (from the available list) can ONLY be selected if a genuinely matching one exists \
-                  as-is — you cannot create a new one. Workflow fields ("this.<key>") CAN be \
-                  invented: prefer an existing one from the provided list ONLY if both its name and \
-                  type are a genuinely good fit; otherwise invent a new snake_case key, reference it \
-                  as "this.<newKey>", and add a matching entry to "missingWorkflowFields" so the \
-                  admin can create it. Given the choice between forcing a mismatched existing ticket \
-                  field and inventing a well-named new workflow field, ALWAYS invent the new \
-                  workflow field instead — a made-up field with the right name and type is far more \
-                  useful than a real field with the wrong meaning. "suggestedFieldType" MUST be \
-                  exactly one of "text", "number", "date", or "checkbox" — never anything else. \
-                  Every key you put in "missingWorkflowFields" must actually be referenced by a \
-                  "this.<key>" somewhere in fieldMappings.response.
-                - Every fieldMappings.response[].target MUST start with either "ticket." (from the \
-                  available ticket fields) or "this." (from the available workflow fields) — never a \
-                  bare field name.
-                - A target field whose "type" (in the available ticket/workflow field lists) is \
-                  "nodelist" stores a growing list of short readable text entries, not a single \
-                  value — each response mapping to it ADDS one or more new entries rather than \
-                  overwriting anything, and the executor automatically turns a captured JSON \
-                  object/array into readable "key: value, key2: value2" text for you, so you never \
-                  need to pre-format it yourself. When the real API response contains a JSON array \
-                  where EACH ELEMENT should become its own list entry (e.g. one entry per flight \
-                  option, one per search result), capture the WHOLE array by copying the path from \
-                  an entry marked "isRepeatableList": true EXACTLY as given, with no "[N]" index \
-                  appended — that captures every real element at run time, not just the single \
-                  compacted preview element you see in this prompt. Only use an indexed leaf path \
-                  (as for every other field type) when the nodelist should get just one entry from a \
-                  single object, not one per array element.
-                - Keep it minimal and correct rather than speculative — a capture or mapping you're \
-                  not confident about is worse than leaving it out.
+                - When the real API response contains a JSON array where EACH ELEMENT is itself a \
+                  meaningful separate item (e.g. one entry per flight option, one per search result) \
+                  and the admin's intent implies the whole set matters (not just one), capture the \
+                  WHOLE array by copying the path from the entry marked "isRepeatableList": true \
+                  EXACTLY as given, with no "[N]" index appended — that captures every real element \
+                  at run time, not just the single compacted preview element you see in this prompt. \
+                  Otherwise, capture one specific indexed leaf path as usual.
+                - "summary" must describe what the captured value actually contains, using the real \
+                  "value" (or, for an "isRepeatableList": true path, the compacted one-element \
+                  preview plus the fact that every real element will be captured at run time) \
+                  already given to you for that exact path — never guess or just restate the path \
+                  name. Keep it to one, at most two, short plain sentences — no markdown, no HTML. \
+                  This exists so an admin can visually verify the capture is correct without leaving \
+                  this screen, so be concrete (e.g. "The total price in USD of the cheapest flight \
+                  option" rather than "A price value").
                 - If earlier turns are present in this conversation, you already know the original \
-                  documentation/intent/field-mapping context from them — use it, and treat the \
-                  admin's original intent as the guide for which captures are genuinely useful, not \
-                  just what the response happens to contain.
+                  documentation/intent context from them — use it, and treat the admin's original \
+                  intent as the guide for which captures are genuinely useful, not just what the \
+                  response happens to contain.
                 """;
         system.setContent(systemTemplate.replace("__PATH_KEY__", pathKey));
 
         LlmStructure user = new LlmStructure();
         user.setRole("user");
-        String docsSection = (dto.getDocumentation() == null || dto.getDocumentation().isBlank())
+        String specificAskSection = (specificAsk == null || specificAsk.isBlank())
+                ? "" : "\n\nFor THIS run specifically, the admin additionally wants: " + specificAsk +
+                        " — treat this as a more specific, higher-priority refinement of the broad " +
+                        "intent above, not a replacement for it: still only capture genuinely " +
+                        "present, correct data, but prioritize capturing what satisfies this " +
+                        "specific ask over other equally-valid captures you might otherwise propose.";
+        String docsSection = (documentation == null || documentation.isBlank())
                 ? "" : "\n\nAPI documentation (use this to disambiguate a generic/abbreviated real " +
-                        "response key when its intended meaning isn't obvious from the key name alone):\n" + dto.getDocumentation();
-        user.setContent("Available ticket fields: " + fieldList +
-                "\n\nAvailable workflow fields: " + workflowFieldList +
-                "\n\nWhat this action should do: " + (dto.getIntent() == null ? "" : dto.getIntent()) +
+                        "response key when its intended meaning isn't obvious from the key name alone):\n" + documentation;
+        user.setContent("What this action should do: " + (intent == null ? "" : intent) +
+                specificAskSection +
                 docsSection +
                 "\n\nCalls, each with its real response already flattened into every available " +
                 "{\"path\":...,\"value\":...} pair you may copy a path from (JSON):\n" + callsJson);
@@ -1385,26 +1475,144 @@ public class TemplateService {
         try {
             draft = mapper.readValue(cleaned, new TypeReference<>() {});
         } catch (Exception e) {
-            log.warn("[TemplateService] aiRefineResponseMapping: model response was not valid JSON ({}); raw response(s) totaled {} chars. Model output: {}",
+            log.warn("[TemplateService] aiExtractResponseCaptures: model response was not valid JSON ({}); raw response(s) totaled {} chars. Model output: {}",
                     e.getMessage(), callsJson.length(), cleaned.length() > 4000 ? cleaned.substring(0, 4000) + "…" : cleaned);
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                     "The AI did not return valid JSON — try a shorter/clearer intent, or a different AI provider/model.");
         }
 
-        Set<String> existingCallIds = new HashSet<>();
-        for (AiRefineCallInputDto c : dto.getCalls()) {
-            if (c.getId() != null) existingCallIds.add(c.getId());
-        }
-        sanitizeRefineDraft(draft, existingCallIds, existingWorkflowFieldKeys(dto.getWorkflowFields()), isMcp);
+        List<Map<String, Object>> calls = sanitizeExtractedCalls(draft, existingCallIds, isMcp);
+        return new ExtractionResult(calls, user.getContent(), cleaned);
+    }
 
-        aiChatService.appendMessage(sessionId, "user", user.getContent());
-        aiChatService.appendMessage(sessionId, "assistant", cleaned);
-        draft.put("sessionId", sessionId);
-        return draft;
+    private record MappingResult(List<Map<String, Object>> responseMappings,
+                                  List<Map<String, Object>> missingWorkflowFields,
+                                  String userContent, String cleanedJson) {}
+
+    /**
+     * Call 2 of the aiRefineResponseMapping split — targeting ONLY, given just the capture
+     * names+summaries Call 1 already produced (never the raw response or flattened path list again
+     * — nothing new to extract here). Near-verbatim mirror of aiMapCallFields' already-proven prompt
+     * shape, adapted for the response side.
+     */
+    @SuppressWarnings("unchecked")
+    private MappingResult aiMapResponseCaptures(
+            AiSettingsEntity aiSettings, List<LlmStructure> historyIncludingExtractionTurn, ObjectMapper mapper,
+            String intent, String specificAsk, String fieldList, String workflowFieldList,
+            List<Map<String, Object>> extractedCalls, Set<String> existingWorkflowFieldKeys)
+            throws IOException, URISyntaxException, InterruptedException {
+        LlmStructure system = new LlmStructure();
+        system.setRole("system");
+        system.setContent("""
+                Given a list of values that were just extracted from a real API response (each a \
+                capture name + a short summary of what it actually is) and the full ticket/workflow \
+                field catalogs, map each capture to the best-fitting existing target field, or \
+                invent a new workflow field when nothing fits. Produce a JSON object with EXACTLY \
+                this shape (no markdown, no explanation, ONLY the JSON):
+                {
+                  "fieldMappings": {
+                    "response": [{"captureName": "must exactly match one of the given capture names", "target": "ticket.<field> or this.<workflow field>"}]
+                  },
+                  "missingWorkflowFields": [{"suggestedFieldKey": "snake_case_key", "suggestedLabel": "Human Label",
+                                              "suggestedFieldType": "text"|"number"|"date"|"checkbox"}]
+                }
+                Rules:
+                - Only map a capture whose meaning (from its summary) is genuinely useful to store —
+                  a capture you're not confident belongs anywhere is better left unmapped than forced
+                  onto a mismatched target.
+                - Read the capture's actual meaning (from its summary) and choose a target whose own
+                  name means the SAME thing — e.g. a captured price/cost must never map to a field
+                  about a location/airport/destination, and vice versa; if you cannot honestly say
+                  the target field's name and the capture's meaning match, it is WRONG, even if that
+                  ticket field happens to be in the available list. Ticket fields (from the available
+                  list) can ONLY be selected if a genuinely matching one exists as-is — you cannot
+                  create a new one.
+                - "target" MUST start with either "ticket." (from the available ticket fields) or
+                  "this." (from the available workflow fields) — never a bare field name.
+                - MANDATORY CHECK for every single "this.<key>" you write, with no exceptions: does
+                  <key> EXACTLY match a key already in the provided workflow fields list, AND is that
+                  field's "type" a genuinely good fit for this capture? If YES, use that exact key.
+                  If NO, you MUST do BOTH: (1) still write "this.<key>" (invent a new snake_case key
+                  if needed), AND (2) add exactly one matching entry to "missingWorkflowFields".
+                  Every "this.<key>" you reference must be either an existing workflow field or
+                  declared in "missingWorkflowFields" — never neither. Given the choice between
+                  forcing a mismatched existing ticket field and inventing a well-named new workflow
+                  field, ALWAYS invent the new workflow field instead — a made-up field with the
+                  right name and type is far more useful than a real field with the wrong meaning.
+                  "suggestedFieldType" MUST be exactly one of "text", "number", "date", or
+                  "checkbox".
+                - A target field whose "type" (in the available ticket/workflow field lists) is
+                  "nodelist" stores a growing list of short readable text entries, not a single value
+                  — mapping a capture to it ADDS a new entry rather than overwriting anything, and
+                  the executor automatically turns a captured JSON object/array into readable
+                  "key: value, key2: value2" text for you, so you never need to pre-format it
+                  yourself. It's a good target for a capture whose summary describes a whole
+                  collection of items (e.g. one entry per flight option) rather than a single scalar.
+                - Keep it minimal — only genuinely-needed mappings, not every capture that happens to
+                  exist.
+                - If earlier turns are present in this conversation (including the extraction step
+                  that just ran, and any documentation/intent given there, or a re-run after refined
+                  instructions/a manual edit), you already know that context — use it, and keep prior
+                  mappings still valid, only changing what the newest instruction/context implies
+                  should change.
+                """);
+
+        List<Map<String, Object>> captureRefs = new ArrayList<>();
+        for (Map<String, Object> call : extractedCalls) {
+            if (!(call.get("responseCaptures") instanceof List<?> caps)) continue;
+            for (Object capObj : caps) {
+                if (!(capObj instanceof Map<?, ?> cap)) continue;
+                Map<String, Object> ref = new LinkedHashMap<>();
+                ref.put("captureName", cap.get("name"));
+                ref.put("summary", cap.get("summary"));
+                captureRefs.add(ref);
+            }
+        }
+        String capturesJson = mapper.writeValueAsString(captureRefs);
+
+        LlmStructure user = new LlmStructure();
+        user.setRole("user");
+        String specificAskSection = (specificAsk == null || specificAsk.isBlank())
+                ? "" : "\n\nFor THIS run specifically, the admin additionally wants: " + specificAsk +
+                        " — when multiple captures could reasonably map to a limited set of target " +
+                        "fields, prioritize satisfying this specific ask over other equally-valid " +
+                        "mappings you might otherwise propose.";
+        user.setContent("Available ticket fields: " + fieldList +
+                "\n\nAvailable workflow fields: " + workflowFieldList +
+                "\n\nWhat this action should do: " + (intent == null ? "" : intent) +
+                specificAskSection +
+                "\n\nCaptured values from the real response, each with what it actually is:\n" + capturesJson);
+
+        List<LlmStructure> llmRequest = new ArrayList<>();
+        llmRequest.add(system);
+        llmRequest.addAll(historyIncludingExtractionTurn);
+        llmRequest.add(user);
+
+        String raw = aiSettingsService.sendLlmRequest(aiSettings, llmRequest);
+        String cleaned = raw.replaceAll("(?s)```[a-zA-Z]*\\n?", "").replace("```", "").trim();
+
+        Map<String, Object> draft;
+        try {
+            draft = mapper.readValue(cleaned, new TypeReference<>() {});
+        } catch (Exception e) {
+            log.warn("[TemplateService] aiMapResponseCaptures: model response was not valid JSON ({}): {}",
+                    e.getMessage(), cleaned.length() > 2000 ? cleaned.substring(0, 2000) + "…" : cleaned);
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "The AI did not return valid JSON — try a different AI provider/model.");
+        }
+
+        Set<String> validCaptureNames = new HashSet<>();
+        for (Map<String, Object> ref : captureRefs) {
+            if (ref.get("captureName") instanceof String s) validCaptureNames.add(s);
+        }
+        List<Map<String, Object>> responseMappings = sanitizeResponseFieldMappings(draft, validCaptureNames);
+        List<Map<String, Object>> missingWorkflowFields = sanitizeMissingWorkflowFields(draft, existingWorkflowFieldKeys);
+        return new MappingResult(responseMappings, missingWorkflowFields, user.getContent(), cleaned);
     }
 
     private static final int MAX_RAW_RESPONSE_FOR_PROMPT_CHARS = 10_000;
     private static final int MAX_FLATTENED_LEAF_ENTRIES = 150;
+    private static final int MAX_CAPTURE_SUMMARY_CHARS = 300; // roughly two short sentences
 
     /**
      * See the comment at aiRefineResponseMapping's call site for the array-compaction reasoning.
@@ -1505,15 +1713,14 @@ public class TemplateService {
     }
 
     /**
-     * Deliberately different from sanitizeDraft/sanitizeMcpDraft: this refines the response side of
-     * ALREADY-EXISTING calls, so call ids must be preserved exactly (never reassigned), and every
-     * other call field (url/auth/arguments/etc.) must be stripped away entirely so a hallucinated
-     * echo of them can never accidentally get merged back over the real request-side config by the
-     * frontend's id-matched merge.
+     * Validates Call 1's (aiExtractResponseCaptures) raw output — call ids must be preserved exactly
+     * (never reassigned) and every other call field (url/auth/arguments/etc.) must never appear at
+     * all so a hallucinated echo of them can never accidentally get merged back over the real
+     * request-side config by the frontend's id-matched merge. "summary" is a best-effort review aid
+     * that never gates the capture (trim, cap at MAX_CAPTURE_SUMMARY_CHARS, default "").
      */
     @SuppressWarnings("unchecked")
-    private void sanitizeRefineDraft(Map<String, Object> draft, Set<String> existingCallIds,
-                                      Set<String> existingWorkflowFieldKeys, boolean isMcp) {
+    private List<Map<String, Object>> sanitizeExtractedCalls(Map<String, Object> draft, Set<String> existingCallIds, boolean isMcp) {
         String pathKey = isMcp ? "resultPath" : "jsonPath";
         List<Map<String, Object>> calls = new ArrayList<>();
         if (draft.get("calls") instanceof List<?> list) {
@@ -1532,9 +1739,14 @@ public class TemplateService {
                         Object path = cap.get(pathKey);
                         if (!(name instanceof String) || ((String) name).isBlank()) continue;
                         if (!(path instanceof String) || ((String) path).isBlank()) continue;
+                        String summary = cap.get("summary") instanceof String s ? s.trim() : "";
+                        if (summary.length() > MAX_CAPTURE_SUMMARY_CHARS) {
+                            summary = summary.substring(0, MAX_CAPTURE_SUMMARY_CHARS) + "…";
+                        }
                         Map<String, Object> cleanCap = new LinkedHashMap<>();
                         cleanCap.put("name", name);
                         cleanCap.put(pathKey, path);
+                        cleanCap.put("summary", summary);
                         captures.add(cleanCap);
                     }
                 }
@@ -1545,9 +1757,18 @@ public class TemplateService {
                 calls.add(cleanCall);
             }
         }
-        draft.put("calls", calls);
+        return calls;
+    }
 
-        List<Map<String, Object>> responseMappings = new ArrayList<>();
+    /**
+     * Validates Call 2's (aiMapResponseCaptures) raw output. "captureName" must match one Call 1
+     * actually produced — not just be non-blank — a cheap, real hallucination-guard the two-call
+     * split newly enables (Call 1's real names are known ground truth before Call 2 even runs, which
+     * wasn't true back when this was one combined call).
+     */
+    @SuppressWarnings("unchecked")
+    private List<Map<String, Object>> sanitizeResponseFieldMappings(Map<String, Object> draft, Set<String> validCaptureNames) {
+        List<Map<String, Object>> out = new ArrayList<>();
         Map<String, Object> fm = draft.get("fieldMappings") instanceof Map
                 ? (Map<String, Object>) draft.get("fieldMappings") : Map.of();
         if (fm.get("response") instanceof List<?> respList) {
@@ -1556,17 +1777,16 @@ public class TemplateService {
                 Map<String, Object> resp = (Map<String, Object>) respObj;
                 Object captureName = resp.get("captureName");
                 Object target = resp.get("target");
-                if (!(captureName instanceof String) || ((String) captureName).isBlank()) continue;
+                if (!(captureName instanceof String cn) || cn.isBlank()) continue;
+                if (!validCaptureNames.contains(cn)) continue;
                 if (!(target instanceof String) || ((String) target).isBlank()) continue;
-                Map<String, Object> cleanResp = new LinkedHashMap<>();
-                cleanResp.put("captureName", captureName);
-                cleanResp.put("target", target);
-                responseMappings.add(cleanResp);
+                Map<String, Object> clean = new LinkedHashMap<>();
+                clean.put("captureName", captureName);
+                clean.put("target", target);
+                out.add(clean);
             }
         }
-        draft.put("fieldMappings", Map.of("response", responseMappings));
-
-        draft.put("missingWorkflowFields", sanitizeMissingWorkflowFields(draft, existingWorkflowFieldKeys));
+        return out;
     }
 
     private Map<String, Object> buildDefaultLayout() {

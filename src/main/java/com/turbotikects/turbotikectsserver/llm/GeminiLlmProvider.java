@@ -8,6 +8,7 @@ import com.turbotikects.turbotikectsserver.dto.llm.LlmStructure;
 import com.turbotikects.turbotikectsserver.entitys.AiSettingsEntity;
 import dev.langchain4j.exception.LangChain4jException;
 import dev.langchain4j.model.chat.ChatModel;
+import dev.langchain4j.model.chat.request.ResponseFormat;
 import dev.langchain4j.model.chat.response.ChatResponse;
 import dev.langchain4j.model.googleai.GoogleAiGeminiChatModel;
 import lombok.extern.slf4j.Slf4j;
@@ -43,9 +44,12 @@ public class GeminiLlmProvider implements LlmProvider {
         try {
             // GoogleAiGeminiChatModel (1.0.0-beta5) has no baseUrl override — it always calls the
             // same /v1beta surface this class already hit, so behavior is unchanged.
+            // ResponseFormat.JSON forces Gemini's own JSON-mode constrained decoding — see
+            // GemmaLlmProvider's identical fix for the fuller reasoning.
             ChatModel model = GoogleAiGeminiChatModel.builder()
                     .apiKey(settings.getApiKey())
                     .modelName(settings.getModelName())
+                    .responseFormat(ResponseFormat.JSON)
                     .build();
             ChatResponse response = model.chat(LangChain4jSupport.toChatMessages(messages));
             return LangChain4jSupport.extractText(response);
