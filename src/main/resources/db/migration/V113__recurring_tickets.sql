@@ -1,0 +1,73 @@
+-- FEAT-13: Recurring Tickets — admin-defined schedules that auto-create tickets from a template
+-- on a cron cadence. See V2/feature-13-recurring.html for the full spec.
+
+CREATE TABLE IF NOT EXISTS recurring_schedules (
+    id                BIGINT AUTO_INCREMENT PRIMARY KEY,
+    name              VARCHAR(255) NOT NULL,
+    template_id       BIGINT NOT NULL,
+    cron_expression   VARCHAR(64)  NOT NULL,
+    frequency_type    VARCHAR(16)  NOT NULL,
+    title_template    VARCHAR(512) NOT NULL,
+    assign_group_id   INT NULL,
+    priority          VARCHAR(16)  NOT NULL DEFAULT 'medium',
+    is_active         TINYINT(1)   NOT NULL DEFAULT 1,
+    last_run_at       TIMESTAMP NULL,
+    next_run_at       TIMESTAMP NOT NULL,
+    created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    CONSTRAINT fk_recurring_schedule_template FOREIGN KEY (template_id) REFERENCES ticket_templates(id) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_recurring_schedules_due ON recurring_schedules (is_active, next_run_at);
+
+INSERT IGNORE INTO permissions (permission_key, display_order) VALUES ('MANAGE_RECURRING_TICKETS', 10);
+
+INSERT IGNORE INTO dynamic_translations (lang_code, translation_key, translated_text, type) VALUES
+    ('en', 'permission_manage_recurring_tickets_name', 'Recurring Tickets', 'system'),
+    ('en', 'permission_manage_recurring_tickets_desc', 'Can manage recurring ticket schedules', 'system'),
+    ('en', 'recurring_tickets_nav_item',       'Recurring Tickets', 'system'),
+    ('en', 'recurring_tickets_card_label',     'Recurring Tickets', 'system'),
+    ('en', 'recurring_tickets_card_subtitle',  'Auto-create tickets on a schedule', 'system'),
+    ('en', 'recurring_page_title',             'Recurring Ticket Schedules', 'system'),
+    ('en', 'recurring_add_btn',                '+ New Schedule', 'system'),
+    ('en', 'recurring_list_empty',             'No recurring schedules configured.', 'system'),
+    ('en', 'recurring_col_name',               'Schedule Name', 'system'),
+    ('en', 'recurring_col_frequency',          'Frequency', 'system'),
+    ('en', 'recurring_col_next_run',           'Next Run', 'system'),
+    ('en', 'recurring_col_assign_to',          'Assign To', 'system'),
+    ('en', 'recurring_col_status',             'Status', 'system'),
+    ('en', 'recurring_status_active',          'Active', 'system'),
+    ('en', 'recurring_status_paused',          'Paused', 'system'),
+    ('en', 'recurring_pause_btn',              'Pause', 'system'),
+    ('en', 'recurring_resume_btn',             'Resume', 'system'),
+    ('en', 'recurring_delete_confirm',         'Delete this recurring schedule? This cannot be undone.', 'system'),
+    ('en', 'recurring_form_title_new',         'New Recurring Ticket Schedule', 'system'),
+    ('en', 'recurring_form_title_edit',        'Edit Recurring Ticket Schedule', 'system'),
+    ('en', 'recurring_form_name_label',        'Schedule Name', 'system'),
+    ('en', 'recurring_form_template_label',    'Template', 'system'),
+    ('en', 'recurring_form_frequency_label',   'Frequency', 'system'),
+    ('en', 'recurring_freq_daily',             'Daily', 'system'),
+    ('en', 'recurring_freq_weekly',            'Weekly', 'system'),
+    ('en', 'recurring_freq_monthly',           'Monthly', 'system'),
+    ('en', 'recurring_freq_quarterly',         'Quarterly', 'system'),
+    ('en', 'recurring_freq_custom',            'Custom (cron)', 'system'),
+    ('en', 'recurring_form_day_of_week_label', 'Day of Week', 'system'),
+    ('en', 'recurring_form_day_of_month_label','Day of Month', 'system'),
+    ('en', 'recurring_form_time_label',        'Create At (Time)', 'system'),
+    ('en', 'recurring_form_time_hint',         'Local server time', 'system'),
+    ('en', 'recurring_form_cron_label',        'Cron Expression', 'system'),
+    ('en', 'recurring_form_cron_hint',         'Standard 6-field cron: sec min hour day-of-month month day-of-week', 'system'),
+    ('en', 'recurring_form_assign_group_label','Assign to Group', 'system'),
+    ('en', 'recurring_form_priority_label',    'Priority', 'system'),
+    ('en', 'recurring_form_title_template_label', 'Title Template', 'system'),
+    ('en', 'recurring_form_title_template_hint',  'Use {{month}}, {{year}}, {{week}}, {{quarter}} — substituted when the ticket is created', 'system'),
+    ('en', 'recurring_next_occurrence_label',  'Next occurrence', 'system'),
+    ('en', 'recurring_next_occurrence_title_will_be', 'Title will be', 'system'),
+    ('en', 'recurring_form_active_label',      'Active', 'system'),
+    ('en', 'recurring_day_mon', 'Monday', 'system'),
+    ('en', 'recurring_day_tue', 'Tuesday', 'system'),
+    ('en', 'recurring_day_wed', 'Wednesday', 'system'),
+    ('en', 'recurring_day_thu', 'Thursday', 'system'),
+    ('en', 'recurring_day_fri', 'Friday', 'system'),
+    ('en', 'recurring_day_sat', 'Saturday', 'system'),
+    ('en', 'recurring_day_sun', 'Sunday', 'system');

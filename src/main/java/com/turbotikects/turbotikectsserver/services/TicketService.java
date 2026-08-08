@@ -233,6 +233,7 @@ public class TicketService {
         ticket.setResponsibleUserId(dto.getResponsibleUserId());
         ticket.setResponsibleGroupId(dto.getResponsibleGroupId());
         ticket.setTicketData(processTimerFields(dto.getTicketData(), reqUserCompany));
+        ticket.setSourceType(source);
         ticket.setVersion(1);
         ticket = ticketRepo.save(ticket);
 
