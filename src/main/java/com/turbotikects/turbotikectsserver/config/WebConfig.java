@@ -54,7 +54,8 @@ public class WebConfig implements WebMvcConfigurer {
             "/api/v1/system-settings",
             "/api/v1/system-settings/logo",
             "/api/v1/csat-survey/**",
-            "/api/v1/workflow-approval/**"
+            "/api/v1/workflow-approval/**",
+            "/api/v1/announcements-public/**"
         };
 
         registry.addInterceptor(authInterceptor)
