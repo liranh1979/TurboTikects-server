@@ -55,3 +55,4 @@ src/main/resources/static/
 /SSL/localhost.cer
 /SSL/localhost.pfx
 /uploads/branding/logo.jpg
+*.log
