@@ -18,6 +18,7 @@ import threading
 import time
 import webbrowser
 import re
+import json
 import urllib.request
 from pathlib import Path
 
@@ -109,6 +110,62 @@ def parse_existing_compose():
                 continue
             cfg[key] = val
     return cfg if cfg else None
+
+def get_target_db_volume_name():
+    """Ask `docker compose config` for the real, project-prefixed volume name Compose
+    will use for db_data in this cwd, rather than reimplementing Compose's project-
+    naming rules by hand (they differ between v1/v2 and could change again). Fails
+    open (returns None) on any error, e.g. legacy `docker-compose` v1 which lacks
+    `--format json`."""
+    compose = get_compose_cmd()
+    if not compose:
+        return None
+    try:
+        if COMPOSE_OUT.exists():
+            r = subprocess.run(compose + ["config", "--format", "json"],
+                                cwd=str(Path.cwd()), capture_output=True,
+                                text=True, timeout=15)
+        else:
+            tpl = COMPOSE_TPL.read_text() if COMPOSE_TPL.exists() else EMBEDDED_TEMPLATE
+            probe = tpl
+            for k in ("DOCKER_IMAGE", "DB_NAME", "DB_PASS", "APP_PORT",
+                      "ADMIN_USERNAME", "ADMIN_PASSWORD", "ADMIN_DISPLAY_NAME"):
+                probe = probe.replace(f"${{{k}}}", "x")
+            r = subprocess.run(compose + ["-f", "-", "config", "--format", "json"],
+                                input=probe, cwd=str(Path.cwd()), capture_output=True,
+                                text=True, timeout=15)
+        if r.returncode == 0:
+            return json.loads(r.stdout).get("volumes", {}).get("db_data", {}).get("name")
+    except Exception:
+        pass
+    return None
+
+def db_volume_has_data(volume_name):
+    """True if volume_name exists AND already contains an initialized MySQL data
+    dir (checked via the ibdata1 marker file — the same signal MySQL's own docker
+    entrypoint uses to decide whether to run first-time init). Fails open (False)
+    if the volume doesn't exist; fails conservatively (True) if it exists but can't
+    be inspected."""
+    if not volume_name:
+        return False
+    r = subprocess.run(["docker", "volume", "inspect", volume_name],
+                        capture_output=True, text=True)
+    if r.returncode != 0:
+        return False
+    try:
+        probe = subprocess.run(
+            ["docker", "run", "--rm", "-v", f"{volume_name}:/vol:ro", "mysql:8.0",
+             "sh", "-c", "test -f /vol/ibdata1 && echo NONEMPTY || echo EMPTY"],
+            capture_output=True, text=True, timeout=60)
+        return "NONEMPTY" in probe.stdout
+    except Exception:
+        return True
+
+def check_stale_db_volume():
+    """(volume_name, has_data) — whether a Fresh Install in this cwd would target a
+    MySQL volume left over from a previous run."""
+    vol = get_target_db_volume_name()
+    return vol, db_volume_has_data(vol)
 
 def generate_compose(cfg):
     """Substitute placeholders in the template and write docker-compose.yml."""
@@ -240,6 +297,7 @@ def run_gui():
             self.mode      = "install"   # "install" | "upgrade"
             self.compose   = get_compose_cmd()
             self._frame    = None
+            self._stale_volume = None
 
             self._setup_styles()
             self.show_preflight()
@@ -417,7 +475,7 @@ def run_gui():
 
             def do_install():
                 self.mode = "install"
-                self.show_image_step()
+                self.show_checking_volume()
 
             def do_upgrade():
                 self.mode = "upgrade"
@@ -442,6 +500,129 @@ def run_gui():
                 note = f"Detected: {existing.get('docker_image', 'unknown image')}"
             ttk.Label(card, text=note, style="Card.TLabel",
                       foreground=FG_DIM).pack(pady=(0, 8))
+
+        def show_checking_volume(self):
+            f = self._clear()
+            self._header(f, "Checking Environment",
+                         "Looking for an existing database in this folder…")
+            ttk.Label(f, text="…", style="Sub.TLabel").pack(pady=40)
+
+            def worker():
+                existing = parse_existing_compose()
+                vol, has_data = check_stale_db_volume()
+                self.after(0, lambda: self._route_after_volume_check(existing, vol, has_data))
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        def _route_after_volume_check(self, existing, vol, has_data):
+            self._stale_volume = vol
+            if not has_data:
+                self.show_image_step()
+                return
+            if existing:
+                self.mode = "upgrade"
+                self.cfg.update(existing)
+                self.show_reuse_notice()
+            else:
+                self.show_volume_conflict()
+
+        def show_reuse_notice(self):
+            f = self._clear()
+            self._header(f, "Existing Database Found",
+                         "An existing database was found in this folder.")
+            card = ttk.Frame(f, style="Card.TFrame", relief="flat", padding=24)
+            card.pack(fill="both", padx=30, pady=20, expand=True)
+            ttk.Label(card, text=(
+                "This folder already has a MySQL database from a previous "
+                "install.\n\nContinuing will reuse its existing setup and "
+                "password instead of creating a new one, so your existing "
+                "data isn't lost or made unreachable."
+            ), style="Card.TLabel", wraplength=460, justify="left").pack(pady=8)
+            self._nav(f, back=self.show_welcome, next_cmd=self.show_image_step,
+                      next_txt="Continue  →")
+
+        def show_volume_conflict(self):
+            f = self._clear()
+            self._header(f, "Existing Database Found",
+                         "A database volume from a previous install exists, "
+                         "but its settings file is missing.")
+            card = ttk.Frame(f, style="Card.TFrame", relief="flat", padding=20)
+            card.pack(fill="both", padx=30, pady=16, expand=True)
+            ttk.Label(card, text=(
+                f"Docker volume '{self._stale_volume}' already contains a "
+                "MySQL database, but no docker-compose.yml was found in this "
+                "folder to recover its password from. Choose how to proceed:"
+            ), style="Card.TLabel", wraplength=460, justify="left").pack(pady=(0, 12))
+
+            ttk.Button(card, text="I know the existing password",
+                       style="Primary.TButton", width=36,
+                       command=self.show_existing_password_step).pack(pady=6)
+            ttk.Button(card, text="Wipe and reinitialize (deletes ALL data)",
+                       width=36, command=self.show_wipe_confirm_step).pack(pady=6)
+
+            self._nav(f, back=self.show_welcome)
+
+        def show_existing_password_step(self):
+            f = self._clear()
+            self._header(f, "Existing Database Password",
+                         "Enter the MySQL root password already stored in the "
+                         "existing volume.", step="Step 2 of 4")
+
+            db_var = tk.StringVar(value=self.cfg.get("db_name", "turbotikects"))
+            pw_var = tk.StringVar(value="")
+            self._field(f, "Database name", db_var)
+            self._field(f, "Existing MySQL password", pw_var, show="●")
+
+            err_lbl = self._inline_status(f)
+
+            def go_next():
+                db = db_var.get().strip()
+                pw = pw_var.get()
+                if not db:
+                    err_lbl.config(text="Database name is required.", foreground=RED); return
+                if not pw:
+                    err_lbl.config(text="Password is required.", foreground=RED); return
+                self.cfg.update({"db_name": db, "db_pass": pw})
+                self.show_admin_step()
+
+            self._nav(f, back=self.show_volume_conflict, next_cmd=go_next)
+
+        def show_wipe_confirm_step(self):
+            f = self._clear()
+            self._header(f, "Confirm Data Wipe",
+                         "This permanently deletes the existing database.")
+            card = ttk.Frame(f, style="Card.TFrame", relief="flat", padding=20)
+            card.pack(fill="both", padx=30, pady=16, expand=True)
+            ttk.Label(card, text=(
+                f"Volume '{self._stale_volume}' and everything in it — every "
+                "ticket, user, and setting in that database — will be "
+                "permanently deleted. This cannot be undone."
+            ), style="Card.TLabel", foreground=RED, wraplength=460,
+                     justify="left").pack(pady=(0, 12))
+
+            confirm_var = tk.BooleanVar(value=False)
+            ttk.Checkbutton(card, text="I understand this permanently deletes all existing data",
+                            variable=confirm_var, style="TCheckbutton"
+                            ).pack(anchor="w", pady=8)
+
+            err_lbl = self._inline_status(f)
+
+            def go_next():
+                if not confirm_var.get():
+                    err_lbl.config(text="You must check the box to continue.", foreground=RED)
+                    return
+                err_lbl.config(text="Removing old volume…", foreground=YELLOW)
+                f.update_idletasks()
+                r = subprocess.run(["docker", "volume", "rm", self._stale_volume],
+                                   capture_output=True, text=True)
+                if r.returncode != 0:
+                    err_lbl.config(text=f"Could not remove volume: {(r.stderr or '').strip()}",
+                                   foreground=RED)
+                    return
+                self.show_database_step()
+
+            self._nav(f, back=self.show_volume_conflict, next_cmd=go_next,
+                      next_txt="Delete & Continue  →")
 
         def show_image_step(self):
             f = self._clear()
@@ -620,6 +801,31 @@ def run_gui():
                       next_txt=f"{action}  ▶",
                       next_style="Primary.TButton")
 
+        def _diagnose_db_auth_failure(self):
+            """Scan the app container's recent logs for the Access Denied / SQL
+            State 28000 signature so a timeout gives a specific, actionable
+            diagnosis instead of a generic 'did not become ready' message —
+            catches anything the pre-flight volume check missed (e.g. the legacy
+            docker-compose v1 fallback, where volume-name detection fails open)."""
+            try:
+                compose = self.compose
+                r = subprocess.run(compose + ["logs", "--no-color", "--tail", "50", "app"],
+                                   capture_output=True, text=True, timeout=15)
+                out = (r.stdout or "") + (r.stderr or "")
+                if "Access denied for user" in out or "SQL State: 28000" in out:
+                    vol = self._stale_volume or get_target_db_volume_name() or "db_data"
+                    return (
+                        "MySQL rejected the app's database password (Access "
+                        "Denied, SQL State 28000). This usually means the "
+                        f"existing database volume ('{vol}') in this folder "
+                        "still has an old password. Re-run the installer and "
+                        "choose 'Upgrade Existing', or remove the volume if "
+                        f"you don't need the old data: docker volume rm {vol}"
+                    )
+            except Exception:
+                pass
+            return None
+
         def start_deploy(self):
             f = self._clear()
             action = "Installing" if self.mode == "install" else "Upgrading"
@@ -711,7 +917,8 @@ def run_gui():
                         f"[…] Polling http://localhost:{port}/api/v1/locales/en"))
                     ready = poll_ready(port, timeout=120)
                     if not ready:
-                        raise RuntimeError("App did not become ready in time. Check logs.")
+                        diag = self._diagnose_db_auth_failure()
+                        raise RuntimeError(diag or "App did not become ready in time. Check logs.")
                     self.after(0, lambda: append_log("[✓] App is ready!"))
                     self.after(0, lambda: self.show_success(port))
 
@@ -806,6 +1013,47 @@ def run_cli():
         mode = "install"
         print(f"\nMode: fresh install")
 
+    # Guard against a Fresh Install silently targeting a MySQL volume left over
+    # from a previous run — MySQL only applies MYSQL_ROOT_PASSWORD on first init,
+    # so a leftover volume + a freshly-typed password would produce a working
+    # docker-compose.yml paired with a broken (Access Denied) deployment.
+    stale_volume = None
+    existing_password_mode = False
+    if mode == "install":
+        print("\nChecking for an existing database in this folder…")
+        stale_volume, has_data = check_stale_db_volume()
+        if has_data:
+            if existing:
+                print(f"An existing database was found in volume '{stale_volume}' "
+                      f"— reusing its existing setup instead of creating a new one.")
+                mode = "upgrade"
+            else:
+                print(f"\nDocker volume '{stale_volume}' already contains a MySQL "
+                      f"database, but no docker-compose.yml was found in this "
+                      f"folder to recover its password from.")
+                print("  1) I know the existing password")
+                print("  2) Wipe and reinitialize (deletes ALL existing data)")
+                print("  3) Cancel")
+                choice = input("Choose [1/2/3]: ").strip()
+                if choice == "2":
+                    confirm = input(
+                        "Type DELETE to permanently delete all existing data in "
+                        f"'{stale_volume}': ").strip()
+                    if confirm != "DELETE":
+                        print("Aborted — no changes made.")
+                        sys.exit(0)
+                    print(f"Removing volume {stale_volume}…")
+                    r = subprocess.run(["docker", "volume", "rm", stale_volume],
+                                       capture_output=True, text=True)
+                    if r.returncode != 0:
+                        print(f"Could not remove volume: {(r.stderr or '').strip()}")
+                        sys.exit(1)
+                elif choice == "1":
+                    existing_password_mode = True
+                else:
+                    print("Aborted — no changes made.")
+                    sys.exit(0)
+
     def prompt(msg, default=None, secret=False):
         display = f"{msg} [{default}]: " if default else f"{msg}: "
         try:
@@ -820,12 +1068,19 @@ def run_cli():
 
     if mode == "install":
         cfg["db_name"] = prompt("Database name", cfg.get("db_name", "turbotikects"))
-        while True:
-            pw  = prompt("MySQL root password", secret=True)
-            pw2 = prompt("Confirm password",    secret=True)
-            if pw and pw == pw2 and len(pw) >= 8:
-                cfg["db_pass"] = pw; break
-            print("Passwords must match and be at least 8 characters.")
+        if existing_password_mode:
+            pw = prompt("Existing MySQL root password", secret=True)
+            if not pw:
+                print("A password is required.")
+                sys.exit(1)
+            cfg["db_pass"] = pw
+        else:
+            while True:
+                pw  = prompt("MySQL root password", secret=True)
+                pw2 = prompt("Confirm password",    secret=True)
+                if pw and pw == pw2 and len(pw) >= 8:
+                    cfg["db_pass"] = pw; break
+                print("Passwords must match and be at least 8 characters.")
         cfg["admin_username"]    = prompt("Admin username", "admin")
         while True:
             pw  = prompt("Admin password", secret=True)
@@ -867,7 +1122,26 @@ def run_cli():
         if mode == "install":
             print(f"  Login: {cfg.get('admin_username', 'admin')} / (your password)")
     else:
-        print("\nApp did not respond in time — check logs with: docker compose logs app")
+        diag = None
+        try:
+            r = subprocess.run(compose + ["logs", "--no-color", "--tail", "50", "app"],
+                               capture_output=True, text=True, timeout=15)
+            out = (r.stdout or "") + (r.stderr or "")
+            if "Access denied for user" in out or "SQL State: 28000" in out:
+                vol = stale_volume or get_target_db_volume_name() or "db_data"
+                diag = (
+                    "\nMySQL rejected the app's database password (Access Denied, "
+                    f"SQL State 28000). This usually means the existing database "
+                    f"volume ('{vol}') in this folder still has an old password.\n"
+                    "Re-run the installer and choose 'Upgrade Existing', or remove "
+                    f"the volume if you don't need the old data: docker volume rm {vol}"
+                )
+        except Exception:
+            pass
+        if diag:
+            print(diag)
+        else:
+            print("\nApp did not respond in time — check logs with: docker compose logs app")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
