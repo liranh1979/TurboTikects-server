@@ -36,19 +36,26 @@ public class DeepSeekLlmProvider implements LlmProvider {
 
     @Override
     public String send(AiSettingsEntity settings, List<LlmStructure> messages) throws IOException {
+        return send(settings, messages, true);
+    }
+
+    @Override
+    public String send(AiSettingsEntity settings, List<LlmStructure> messages, boolean expectJson) throws IOException {
         try {
             // DeepSeek's API is OpenAI-compatible — reuses langchain4j-open-ai's OpenAiChatModel
             // with DeepSeek's own baseUrl, per DeepSeek's own published integration docs.
             // "json_object" forces JSON-mode constrained decoding (DeepSeek's docs confirm the
             // same OpenAI-compatible response_format param) — see GemmaLlmProvider's identical fix
-            // for the fuller reasoning.
-            ChatModel model = OpenAiChatModel.builder()
+            // for the fuller reasoning. Only applied when the caller actually expects JSON back —
+            // forcing it on a free-form chat reply was found live to make the model emit unrelated
+            // JSON instead of answering the question.
+            var builder = OpenAiChatModel.builder()
                     .baseUrl(BASE_URL)
                     .apiKey(settings.getApiKey())
                     .modelName(settings.getModelName())
-                    .temperature(0.3)
-                    .responseFormat("json_object")
-                    .build();
+                    .temperature(0.3);
+            if (expectJson) builder.responseFormat("json_object");
+            ChatModel model = builder.build();
             ChatResponse response = model.chat(LangChain4jSupport.toChatMessages(messages));
             return LangChain4jSupport.extractText(response);
         } catch (LangChain4jException e) {

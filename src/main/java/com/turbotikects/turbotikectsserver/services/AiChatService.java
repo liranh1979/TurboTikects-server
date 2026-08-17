@@ -151,7 +151,12 @@ public class AiChatService {
             llmRequest.add(s);
         }
 
-        String raw = aiSettingsService.sendLlmRequest(ai, llmRequest);
+        // expectJson=false — this is a free-form conversational reply, not a structured-extraction
+        // call. Found live: with JSON-mode forced (this codebase's default for every AI call, since
+        // most AI features do want structured JSON back), the model was constrained to emit
+        // syntactically valid JSON even for a plain question, producing an unrelated
+        // ticket-metadata-shaped object instead of an actual answer.
+        String raw = aiSettingsService.sendLlmRequest(ai, llmRequest, false);
 
         // Save assistant response
         AiChatMessageEntity assistantMsg = new AiChatMessageEntity();

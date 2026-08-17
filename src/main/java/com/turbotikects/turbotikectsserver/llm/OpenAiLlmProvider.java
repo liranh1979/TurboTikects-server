@@ -37,19 +37,26 @@ public class OpenAiLlmProvider implements LlmProvider {
 
     @Override
     public String send(AiSettingsEntity settings, List<LlmStructure> messages) throws IOException {
+        return send(settings, messages, true);
+    }
+
+    @Override
+    public String send(AiSettingsEntity settings, List<LlmStructure> messages, boolean expectJson) throws IOException {
         try {
             // "json_object" forces OpenAI's own JSON-mode constrained decoding — every AI method
             // in TemplateService asks for "ONLY the JSON" in the prompt text and hopes the model
             // complies; this enforces it at the API level instead, eliminating "The AI did not
             // return valid JSON" (a parse failure on malformed output) as a possible outcome. See
             // GemmaLlmProvider's identical fix for the fuller reasoning (this app's default active
-            // provider, where the failure was actually reported live).
-            ChatModel model = OpenAiChatModel.builder()
+            // provider, where the failure was actually reported live). Only applied when the
+            // caller actually expects JSON back — forcing it on a free-form chat reply was found
+            // live to make the model emit unrelated JSON instead of answering the question.
+            var builder = OpenAiChatModel.builder()
                     .apiKey(settings.getApiKey())
                     .modelName(settings.getModelName())
-                    .temperature(0.3)
-                    .responseFormat("json_object")
-                    .build();
+                    .temperature(0.3);
+            if (expectJson) builder.responseFormat("json_object");
+            ChatModel model = builder.build();
             ChatResponse response = model.chat(LangChain4jSupport.toChatMessages(messages));
             return LangChain4jSupport.extractText(response);
         } catch (LangChain4jException e) {

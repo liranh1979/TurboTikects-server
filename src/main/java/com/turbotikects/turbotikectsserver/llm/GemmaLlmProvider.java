@@ -58,6 +58,11 @@ public class GemmaLlmProvider implements LlmProvider {
 
     @Override
     public String send(AiSettingsEntity settings, List<LlmStructure> messages) throws IOException {
+        return send(settings, messages, true);
+    }
+
+    @Override
+    public String send(AiSettingsEntity settings, List<LlmStructure> messages, boolean expectJson) throws IOException {
         synchronized (OLLAMA_CALL_LOCK) {
             try {
                 // A real root cause found live (this explained empty/truncated output far better
@@ -84,12 +89,12 @@ public class GemmaLlmProvider implements LlmProvider {
                 // (still just as capable of, say, an empty array) — that's the sanitize*/MANDATORY
                 // CHECK prompt rules' job, unchanged — but the specific "isn't even valid JSON" class
                 // of error this fixes is exactly the one reported live.
-                ChatModel model = OllamaChatModel.builder()
+                var builder = OllamaChatModel.builder()
                         .baseUrl(baseUrl)
                         .modelName(settings.getModelName())
-                        .numCtx(16384)
-                        .responseFormat(ResponseFormat.JSON)
-                        .build();
+                        .numCtx(16384);
+                if (expectJson) builder.responseFormat(ResponseFormat.JSON);
+                ChatModel model = builder.build();
                 ChatResponse response = model.chat(LangChain4jSupport.toChatMessages(messages));
                 return LangChain4jSupport.extractText(response);
             } catch (LangChain4jException e) {

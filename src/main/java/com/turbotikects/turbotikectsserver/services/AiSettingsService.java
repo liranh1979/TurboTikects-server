@@ -121,11 +121,17 @@ public class AiSettingsService {
     private static final long LLM_RETRY_INITIAL_BACKOFF_MS = 20_000;
 
     public String sendLlmRequest(AiSettingsEntity aiSettingsEntity, List<LlmStructure> llmRequest) throws URISyntaxException, IOException, InterruptedException {
+        return sendLlmRequest(aiSettingsEntity, llmRequest, true);
+    }
+
+    /** expectJson=false for free-form conversational calls (e.g. ticket chat) — see
+     * LlmProvider.send()'s 3-arg overload for why this exists. */
+    public String sendLlmRequest(AiSettingsEntity aiSettingsEntity, List<LlmStructure> llmRequest, boolean expectJson) throws URISyntaxException, IOException, InterruptedException {
         var provider = llmProviderFactory.getProvider(aiSettingsEntity.getProviderName());
         long backoffMs = LLM_RETRY_INITIAL_BACKOFF_MS;
         for (int attempt = 1; attempt <= LLM_RETRY_MAX_ATTEMPTS; attempt++) {
             try {
-                return provider.send(aiSettingsEntity, llmRequest);
+                return provider.send(aiSettingsEntity, llmRequest, expectJson);
             } catch (IOException e) {
                 if (attempt == LLM_RETRY_MAX_ATTEMPTS || !isRateLimitError(e)) throw e;
                 log.warn("[AiSettingsService] {} rate-limited (attempt {}/{}) — retrying in {}s: {}",

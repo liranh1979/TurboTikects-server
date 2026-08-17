@@ -37,6 +37,11 @@ public class OpenRouterLlmProvider implements LlmProvider {
 
     @Override
     public String send(AiSettingsEntity settings, List<LlmStructure> messages) throws IOException {
+        return send(settings, messages, true);
+    }
+
+    @Override
+    public String send(AiSettingsEntity settings, List<LlmStructure> messages, boolean expectJson) throws IOException {
         try {
             // OpenRouter's API is OpenAI-compatible — reuses langchain4j-open-ai's OpenAiChatModel
             // with OpenRouter's own baseUrl + the same HTTP-Referer/X-Title headers it already sent.
@@ -45,14 +50,16 @@ public class OpenRouterLlmProvider implements LlmProvider {
             // underlying model was actually selected, and per OpenRouter's own docs, a model that
             // doesn't support it gets the parameter silently ignored rather than erroring, so this
             // is a safe default across OpenRouter's whole catalog, not just JSON-mode-capable models.
-            ChatModel model = OpenAiChatModel.builder()
+            // Only applied when the caller actually expects JSON back — forcing it on a free-form
+            // chat reply was found live to make the model emit unrelated JSON.
+            var builder = OpenAiChatModel.builder()
                     .baseUrl(BASE_URL)
                     .apiKey(settings.getApiKey())
                     .modelName(settings.getModelName())
                     .temperature(0.3)
-                    .responseFormat("json_object")
-                    .customHeaders(Map.of("HTTP-Referer", "https://turbotikects.app", "X-Title", "TurboTikects"))
-                    .build();
+                    .customHeaders(Map.of("HTTP-Referer", "https://turbotikects.app", "X-Title", "TurboTikects"));
+            if (expectJson) builder.responseFormat("json_object");
+            ChatModel model = builder.build();
             ChatResponse response = model.chat(LangChain4jSupport.toChatMessages(messages));
             return LangChain4jSupport.extractText(response);
         } catch (LangChain4jException e) {

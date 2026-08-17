@@ -41,16 +41,23 @@ public class GeminiLlmProvider implements LlmProvider {
 
     @Override
     public String send(AiSettingsEntity settings, List<LlmStructure> messages) throws IOException {
+        return send(settings, messages, true);
+    }
+
+    @Override
+    public String send(AiSettingsEntity settings, List<LlmStructure> messages, boolean expectJson) throws IOException {
         try {
             // GoogleAiGeminiChatModel (1.0.0-beta5) has no baseUrl override — it always calls the
             // same /v1beta surface this class already hit, so behavior is unchanged.
             // ResponseFormat.JSON forces Gemini's own JSON-mode constrained decoding — see
-            // GemmaLlmProvider's identical fix for the fuller reasoning.
-            ChatModel model = GoogleAiGeminiChatModel.builder()
+            // GemmaLlmProvider's identical fix for the fuller reasoning. Only applied when the
+            // caller actually expects JSON back (see LlmProvider's 3-arg send() overload) — forcing
+            // it on a free-form chat reply was found live to make the model emit unrelated JSON.
+            var builder = GoogleAiGeminiChatModel.builder()
                     .apiKey(settings.getApiKey())
-                    .modelName(settings.getModelName())
-                    .responseFormat(ResponseFormat.JSON)
-                    .build();
+                    .modelName(settings.getModelName());
+            if (expectJson) builder.responseFormat(ResponseFormat.JSON);
+            ChatModel model = builder.build();
             ChatResponse response = model.chat(LangChain4jSupport.toChatMessages(messages));
             return LangChain4jSupport.extractText(response);
         } catch (LangChain4jException e) {
