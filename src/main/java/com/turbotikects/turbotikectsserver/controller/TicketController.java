@@ -95,7 +95,7 @@ public class TicketController {
                 || (caller.getEffectivePermissions() != null
                     && caller.getEffectivePermissions().contains("TICKET_MANAGER")));
         String source = isManager ? "admin" : "end_user";
-        return ticketService.create(dto, userId, source);
+        return ticketService.create(dto, userId, source, isManager);
     }
 
     // ── CLONE ─────────────────────────────────────────────────────────────────
@@ -105,7 +105,21 @@ public class TicketController {
     public TicketDetailDto clone(@PathVariable Long id,
                                   @RequestBody(required = false) CloneTicketRequestDto dto,
                                   HttpServletRequest request) {
-        return ticketService.clone(id, dto != null ? dto.getTitle() : null, currentUserId(request));
+        UserDto caller = currentUser(request);
+        boolean isManager = caller != null && (caller.isSuperAdmin()
+                || (caller.getEffectivePermissions() != null
+                    && caller.getEffectivePermissions().contains("TICKET_MANAGER")));
+        return ticketService.clone(id, dto != null ? dto.getTitle() : null, currentUserId(request), isManager);
+    }
+
+    // ── KNOWN ERROR SUGGEST (Problem Management) ────────────────────────────────
+
+    // Any authenticated user — including end users — can trigger this while typing a new
+    // ticket's title; it deflects duplicate tickets by surfacing a matching Known Error's
+    // workaround. See V2/Problem Management/02-relationships-known-error.html.
+    @GetMapping("/known-errors/suggest")
+    public List<KnownErrorSuggestDto> suggestKnownErrors(@RequestParam String q) {
+        return ticketService.suggestKnownErrors(q);
     }
 
     // ── PATCH ─────────────────────────────────────────────────────────────────
@@ -115,8 +129,12 @@ public class TicketController {
                                                   @RequestBody PatchTicketRequestDto dto,
                                                   HttpServletRequest request) {
         Integer userId = currentUserId(request);
+        UserDto caller = currentUser(request);
+        boolean isManager = caller != null && (caller.isSuperAdmin()
+                || (caller.getEffectivePermissions() != null
+                    && caller.getEffectivePermissions().contains("TICKET_MANAGER")));
         try {
-            return ResponseEntity.ok(ticketService.patch(id, dto, userId));
+            return ResponseEntity.ok(ticketService.patch(id, dto, userId, isManager));
         } catch (ResponseStatusException ex) {
             if (ex.getStatusCode() == HttpStatus.CONFLICT) {
                 TicketDetailDto current = ticketService.getById(id);

@@ -26,6 +26,9 @@ public class TemplateEntity {
     @Column(name = "is_default")
     private boolean isDefault;
 
+    @Column(name = "is_internal")
+    private boolean isInternal;
+
     @Column(name = "created_at")
     private LocalDateTime createdAt;
 

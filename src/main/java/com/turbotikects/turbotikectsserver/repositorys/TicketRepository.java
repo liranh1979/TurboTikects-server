@@ -66,6 +66,19 @@ public interface TicketRepository extends JpaRepository<TicketEntity, Long>, Jpa
                                         @Param("excludeId") Long excludeId, @Param("companyId") Integer companyId,
                                         @Param("limit") int limit);
 
+    // Known Error suggestion lookup (Problem Management): any ticket flagged known_error=true
+    // in its ticketData JSON, matched against the same title/description FULLTEXT index
+    // searchPage already uses — deliberately not scoped to a specific template id/name, so any
+    // future problem-shaped template is picked up automatically. See
+    // V2/Problem Management/02-relationships-known-error.html.
+    @Query(value = """
+            SELECT t.* FROM tickets t
+            WHERE MATCH(t.title, t.description) AGAINST (:q IN BOOLEAN MODE)
+              AND JSON_EXTRACT(t.ticket_data, '$.known_error') = true
+            ORDER BY t.id DESC LIMIT :limit
+            """, nativeQuery = true)
+    List<TicketEntity> findKnownErrorMatches(@Param("q") String q, @Param("limit") int limit);
+
     @Modifying
     @Transactional
     @Query("DELETE FROM TicketEntity t WHERE t.id IN :ids")

@@ -33,10 +33,16 @@ public class TemplateController {
         return templateService.getWithLayout(id);
     }
 
-    // Open to any authenticated user — needed for template selection in CreateTicketPage
+    // Open to any authenticated user — needed for template selection in CreateTicketPage.
+    // Problem Management: internal-only templates (is_internal=1) are filtered out server-side
+    // for non-managers here, not just hidden client-side — see
+    // V2/Problem Management/04-permissions-end-users.html.
     @GetMapping
-    public List<TemplateSummaryDto> getAll() {
-        return templateService.getAll();
+    public List<TemplateSummaryDto> getAll(HttpServletRequest request) {
+        Object user = request.getAttribute("currentUser");
+        boolean isManager = user instanceof UserDto dto && (dto.isSuperAdmin()
+                || (dto.getEffectivePermissions() != null && dto.getEffectivePermissions().contains("TICKET_MANAGER")));
+        return templateService.getAll(isManager);
     }
 
     @RequirePermission("MANAGE_FIELDS")

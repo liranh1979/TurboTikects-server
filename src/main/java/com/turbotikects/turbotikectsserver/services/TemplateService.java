@@ -63,9 +63,16 @@ public class TemplateService {
     }
 
     public List<TemplateSummaryDto> getAll() {
+        return getAll(true);
+    }
+
+    public List<TemplateSummaryDto> getAll(boolean isManager) {
         List<TemplateEntity> templates = templateRepo.findAll();
         List<TemplateSummaryDto> result = new ArrayList<>();
         for (TemplateEntity t : templates) {
+            // Problem Management: internal-only templates never reach a non-manager's New
+            // Ticket picker — see V2/Problem Management/04-permissions-end-users.html.
+            if (t.isInternal() && !isManager) continue;
             TemplateSummaryDto dto = new TemplateSummaryDto();
             dto.setId(t.getId());
             dto.setName(t.getName());

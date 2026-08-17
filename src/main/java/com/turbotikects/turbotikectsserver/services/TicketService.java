@@ -31,6 +31,7 @@ public class TicketService {
     private final HoursOfOperationRepository hooRepo;
     private final TimerCalculationService timerCalc;
     private final TicketRelationshipRepository relationshipRepo;
+    private final TemplateRepository templateRepo;
 
     public TicketService(TicketRepository ticketRepo,
                          TicketLabelAssignmentRepository labelAssignmentRepo,
@@ -43,7 +44,8 @@ public class TicketService {
                          FieldDefinitionsRepository fieldDefRepo,
                          HoursOfOperationRepository hooRepo,
                          TimerCalculationService timerCalc,
-                         TicketRelationshipRepository relationshipRepo) {
+                         TicketRelationshipRepository relationshipRepo,
+                         TemplateRepository templateRepo) {
         this.ticketRepo = ticketRepo;
         this.labelAssignmentRepo = labelAssignmentRepo;
         this.labelRepo = labelRepo;
@@ -56,6 +58,13 @@ public class TicketService {
         this.hooRepo = hooRepo;
         this.timerCalc = timerCalc;
         this.relationshipRepo = relationshipRepo;
+        this.templateRepo = templateRepo;
+    }
+
+    /** Problem Management: true if this template is flagged internal-only (agents/admins), see
+     * V2/Problem Management/04-permissions-end-users.html. Reused by create/patch/getById. */
+    private boolean isInternalTemplate(Long templateId) {
+        return templateId != null && templateRepo.findById(templateId).map(TemplateEntity::isInternal).orElse(false);
     }
 
     // ── LIST / SEARCH ─────────────────────────────────────────────────────────
@@ -158,6 +167,13 @@ public class TicketService {
         TicketEntity ticket = ticketRepo.findById(id)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
 
+        // Problem Management: internal-only templates (Problem, later Change) are never visible
+        // to a non-manager, even if they'd otherwise qualify as the "requester" below — checked
+        // first, deliberately takes precedence over every other visibility rule.
+        if (!isSuperAdmin && !isManager && isInternalTemplate(ticket.getTemplateId())) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN);
+        }
+
         boolean isRequester = callerId != null && callerId.equals(ticket.getRequestUserId());
 
         if (isSuperAdmin || isRequester) {
@@ -182,18 +198,32 @@ public class TicketService {
 
     @Transactional
     public TicketDetailDto create(CreateTicketRequestDto dto, Integer actorId) {
-        return createInternal(dto, actorId, true, "manual");
+        // Trusted internal caller (AI chat, etc.) — not a raw HTTP request where an unprivileged
+        // user picks the templateId themselves, so the internal-template gate is bypassed here.
+        // Only TicketController's create() endpoint computes and passes the caller's real
+        // manager status, since that's the actual untrusted entry point.
+        return createInternal(dto, actorId, true, "manual", true);
     }
 
     @Transactional
     public TicketDetailDto create(CreateTicketRequestDto dto, Integer actorId, String source) {
-        return createInternal(dto, actorId, true, source);
+        return createInternal(dto, actorId, true, source, true);
+    }
+
+    @Transactional
+    public TicketDetailDto create(CreateTicketRequestDto dto, Integer actorId, String source, boolean isManager) {
+        return createInternal(dto, actorId, true, source, isManager);
     }
 
     // ── CLONE ─────────────────────────────────────────────────────────────────
 
     @Transactional
     public TicketDetailDto clone(Long sourceId, String overrideTitle, Integer actorId) {
+        return clone(sourceId, overrideTitle, actorId, true);
+    }
+
+    @Transactional
+    public TicketDetailDto clone(Long sourceId, String overrideTitle, Integer actorId, boolean isManager) {
         TicketEntity source = ticketRepo.findById(sourceId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
 
@@ -210,13 +240,18 @@ public class TicketService {
         dto.setLabelIds(labelAssignmentRepo.findByTicketId(sourceId).stream()
                 .map(TicketLabelAssignmentEntity::getLabelId).collect(Collectors.toList()));
 
-        TicketDetailDto created = createInternal(dto, actorId, false, "clone");
+        TicketDetailDto created = createInternal(dto, actorId, false, "clone", isManager);
         workflowService.cloneWorkflowItems(sourceId, created.getId());
         writeActivityLog(created.getId(), actorId, "TICKET_CLONED", Map.of("sourceTicketId", sourceId));
         return created;
     }
 
-    private TicketDetailDto createInternal(CreateTicketRequestDto dto, Integer actorId, boolean seedWorkflowFromTemplate, String source) {
+    private TicketDetailDto createInternal(CreateTicketRequestDto dto, Integer actorId, boolean seedWorkflowFromTemplate, String source, boolean isManager) {
+        // Problem Management: block non-managers from creating (or cloning into) a ticket on an
+        // internal-only template — see V2/Problem Management/04-permissions-end-users.html.
+        if (!isManager && isInternalTemplate(dto.getTemplateId())) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "This template is restricted to agents/admins.");
+        }
         TicketEntity ticket = new TicketEntity();
         ticket.setTitle(dto.getTitle());
         ticket.setDescription(dto.getDescription());
@@ -296,8 +331,19 @@ public class TicketService {
 
     @Transactional
     public TicketDetailDto patch(Long id, PatchTicketRequestDto dto, Integer actorId) {
+        return patch(id, dto, actorId, true);
+    }
+
+    @Transactional
+    public TicketDetailDto patch(Long id, PatchTicketRequestDto dto, Integer actorId, boolean isManager) {
         TicketEntity ticket = ticketRepo.findById(id)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND));
+
+        // Problem Management: non-managers can't edit a ticket on an internal-only template
+        // either — see V2/Problem Management/04-permissions-end-users.html.
+        if (!isManager && isInternalTemplate(ticket.getTemplateId())) {
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, "This template is restricted to agents/admins.");
+        }
 
         // Optimistic lock check
         if (ticket.getVersion() != dto.getVersion()) {
@@ -354,8 +400,21 @@ public class TicketService {
         }
         if (dto.getTicketData() != null) {
             changes.put("ticketData", Map.of("updated", true));
+            // Problem Management: capture the old problem_status before it's overwritten below,
+            // so a real transition can auto-sync the shared `status` field afterward — see
+            // V2/Problem Management/03-status-workflow.html for why this mapping exists (Problem
+            // templates hide `status` from manual editing, so nothing else keeps it current).
+            Object oldProblemStatus = ticket.getTicketData() != null ? ticket.getTicketData().get("problem_status") : null;
+            Object newProblemStatus = dto.getTicketData().get("problem_status");
             Integer companyId = ticket.getCompanyId();
             ticket.setTicketData(processTimerFields(dto.getTicketData(), companyId));
+            if (newProblemStatus != null && !newProblemStatus.equals(oldProblemStatus)) {
+                String mappedStatus = mapProblemStatusToTicketStatus(String.valueOf(newProblemStatus));
+                if (mappedStatus != null && !mappedStatus.equals(ticket.getStatus())) {
+                    changes.put("status", Map.of("from", ticket.getStatus(), "to", mappedStatus));
+                    ticket.setStatus(mappedStatus);
+                }
+            }
         }
 
         ticket.setVersion(ticket.getVersion() + 1);
@@ -929,5 +988,40 @@ public class TicketService {
 
     private Object nullSafe(Object value) {
         return value != null ? value : "";
+    }
+
+    /** Problem Management — see V2/Problem Management/03-status-workflow.html for why this
+     * mapping exists: Problem templates omit `status` from their layout entirely, so nothing
+     * else keeps the shared status (SLA, dashboards, list filters) current as an agent walks a
+     * Problem through its own problem_status lifecycle. known_error maps to `pending` on
+     * purpose — that's exactly what already pauses the SLA clock elsewhere in this app, and a
+     * Known Error genuinely is "handled for now, waiting on the permanent fix." */
+    private String mapProblemStatusToTicketStatus(String problemStatus) {
+        return switch (problemStatus) {
+            case "open", "under_investigation" -> "open";
+            case "known_error" -> "pending";
+            case "resolved" -> "completed";
+            default -> null;
+        };
+    }
+
+    /** Known Error suggestion lookup (Problem Management) — same shape as
+     * KbArticleService.suggest(), see V2/Problem Management/02-relationships-known-error.html.
+     * Not scoped to a specific template: matches any ticket with known_error=true in its
+     * ticketData, regardless of which template set that flag. */
+    public List<KnownErrorSuggestDto> suggestKnownErrors(String q) {
+        if (q == null || q.isBlank()) return Collections.emptyList();
+        List<TicketEntity> matches = ticketRepo.findKnownErrorMatches(q + "*", 5);
+        List<KnownErrorSuggestDto> result = new ArrayList<>();
+        for (TicketEntity t : matches) {
+            KnownErrorSuggestDto dto = new KnownErrorSuggestDto();
+            dto.setProblemId(t.getId());
+            dto.setTitle(t.getTitle());
+            Object workaround = t.getTicketData() != null ? t.getTicketData().get("workaround") : null;
+            String raw = workaround != null ? String.valueOf(workaround) : "";
+            dto.setWorkaroundPlainText(raw.indexOf('<') >= 0 ? org.jsoup.Jsoup.parse(raw).text() : raw);
+            result.add(dto);
+        }
+        return result;
     }
 }
