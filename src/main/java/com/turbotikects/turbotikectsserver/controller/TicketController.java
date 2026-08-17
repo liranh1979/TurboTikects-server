@@ -17,6 +17,7 @@ import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.io.IOException;
 import java.net.URISyntaxException;
+import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
@@ -222,6 +223,13 @@ public class TicketController {
             HttpServletRequest request) {
         Integer userId = currentUserId(request);
         return ResponseEntity.ok(ticketService.saveAiSolution(id, dto.getSolution(), userId));
+    }
+
+    /** Backs the ticket page's "Copy from AI Solution" button — resolves the most recent
+     * ai_solution activity entry (checking both write paths' keys, see TicketService). */
+    @GetMapping("/{id}/latest-ai-solution")
+    public Map<String, Object> getLatestAiSolution(@PathVariable Long id) {
+        return Collections.singletonMap("text", ticketService.getLatestAiSolutionText(id));
     }
 
     @PostMapping("/{id}/activity/{activityId}/send-solution-email")

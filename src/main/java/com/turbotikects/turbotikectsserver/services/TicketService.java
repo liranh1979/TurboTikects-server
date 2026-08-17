@@ -220,6 +220,7 @@ public class TicketService {
         TicketEntity ticket = new TicketEntity();
         ticket.setTitle(dto.getTitle());
         ticket.setDescription(dto.getDescription());
+        ticket.setSolution(dto.getSolution());
         ticket.setStatus(dto.getStatus() != null ? dto.getStatus() : "new");
         ticket.setPriority(dto.getPriority() != null ? dto.getPriority() : "medium");
         ticket.setTemplateId(dto.getTemplateId());
@@ -326,6 +327,10 @@ public class TicketService {
         if (dto.getDescription() != null && !dto.getDescription().equals(ticket.getDescription())) {
             changes.put("description", Map.of("from", nullSafe(ticket.getDescription()), "to", dto.getDescription()));
             ticket.setDescription(dto.getDescription());
+        }
+        if (dto.getSolution() != null && !dto.getSolution().equals(ticket.getSolution())) {
+            changes.put("solution", Map.of("from", nullSafe(ticket.getSolution()), "to", dto.getSolution()));
+            ticket.setSolution(dto.getSolution());
         }
         if (dto.getPriority() != null && !dto.getPriority().equals(ticket.getPriority())) {
             changes.put("priority", Map.of("from", ticket.getPriority(), "to", dto.getPriority()));
@@ -650,6 +655,23 @@ public class TicketService {
         return Map.of("status", "ok");
     }
 
+    /** Backs the ticket page's "Copy from AI Solution" button. There are two independent
+     * write sites for ai_solution activity entries with different JSON keys — this manual
+     * "Save as AI Solution" (Map.of("body", ...) above) and EmailProcessorService's automatic
+     * inbound-email AI triage (Map.of("solution", ..., "confidence", ...)) — so both keys must
+     * be checked, same as KbAiService.extractSolutionText() already does for the same reason. */
+    public String getLatestAiSolutionText(Long ticketId) {
+        org.springframework.data.domain.Page<TicketActivityLogEntity> page = activityRepo.findByTicketIdAndActivityTypeOrderByCreatedAtDesc(
+                ticketId, "ai_solution", org.springframework.data.domain.PageRequest.of(0, 1));
+        if (page.isEmpty()) return null;
+        Map<String, Object> changes = page.getContent().get(0).getChanges();
+        if (changes == null) return null;
+        Object body = changes.get("body");
+        if (body != null) return String.valueOf(body);
+        Object solution = changes.get("solution");
+        return solution != null ? String.valueOf(solution) : null;
+    }
+
     public Map<String, Object> sendSolutionEmail(Long ticketId, Long activityId, Integer actorId) {
         TicketEntity ticket = ticketRepo.findById(ticketId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Ticket not found"));
@@ -789,6 +811,7 @@ public class TicketService {
         dto.setId(ticket.getId());
         dto.setTitle(ticket.getTitle());
         dto.setDescription(ticket.getDescription());
+        dto.setSolution(ticket.getSolution());
         dto.setStatus(ticket.getStatus());
         dto.setPriority(ticket.getPriority());
         dto.setTemplateId(ticket.getTemplateId());

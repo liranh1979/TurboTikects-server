@@ -9,6 +9,7 @@ import java.util.Map;
 public class CreateTicketRequestDto {
     private String title;
     private String description;
+    private String solution;
     private String status;
     private String priority;
     private Long templateId;

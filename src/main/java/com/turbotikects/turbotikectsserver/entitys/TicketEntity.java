@@ -23,6 +23,9 @@ public class TicketEntity {
     @Column(columnDefinition = "TEXT")
     private String description;
 
+    @Column(columnDefinition = "TEXT")
+    private String solution;
+
     @Column(nullable = false, length = 32)
     private String status;
 
