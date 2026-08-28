@@ -124,12 +124,12 @@ public class TemplateController {
         return workflowActionTestService.test(dto);
     }
 
-    /** "Verify Captures" — Response Mapping step, external_api only: re-checks JsonPaths against a response already fetched by an earlier "Test this call now" run, no new live call. See ExternalApiActionExecutor.evaluateResponseCaptures' javadoc. */
+    /** "Verify Captures"/"Verify Mapping" — Response Mapping step, external_api and mcp_tool: re-checks jsonPath/resultPath against a response already fetched by an earlier "Test this call now" run, no new live call. See ExternalApiActionExecutor/McpActionExecutor.evaluateResponseCaptures javadocs. */
     @RequirePermission("MANAGE_FIELDS")
     @PostMapping("/evaluate-response-captures")
     public com.turbotikects.turbotikectsserver.dto.WorkflowActionTestResult evaluateResponseCaptures(
             @RequestBody EvaluateResponseCapturesRequestDto dto) {
-        return workflowActionTestService.evaluateResponseCaptures(dto.getCalls());
+        return workflowActionTestService.evaluateResponseCaptures(dto.getType(), dto.getCalls());
     }
 
     /** "Auto-map from this response" — re-derives responseCaptures/resultPath + fieldMappings.response for already-tested calls, grounded in their REAL captured response rather than a guess. See TemplateService.aiRefineResponseMapping's javadoc. */

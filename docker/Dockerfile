@@ -47,8 +47,15 @@ FROM eclipse-temurin:17-jre-alpine
 ARG APP_VERSION=dev
 ENV APP_VERSION=${APP_VERSION}
 
+# FEAT-19 — AI-Generated MCP Servers spawns python3 -m venv + pip install per server at deploy
+# time. Alpine's package is "python3" (no bare "python" binary), hence MCP_PYTHON_EXECUTABLE below
+# rather than the Windows-dev default of "python" in application.properties. Requires PyPI egress
+# from this container at deploy time — see V2/mcp-server-management/06-build-plan.html's risks.
+RUN apk add --no-cache python3 py3-pip
+ENV MCP_PYTHON_EXECUTABLE=python3
+
 WORKDIR /app
-RUN mkdir -p uploads
+RUN mkdir -p uploads mcp-scripts
 
 COPY --from=build /workspace/TurboTikects-server/build/libs/*.jar app.jar
 

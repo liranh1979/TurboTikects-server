@@ -2,7 +2,9 @@ package com.turbotikects.turbotikectsserver.services;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jayway.jsonpath.JsonPath;
+import com.turbotikects.turbotikectsserver.dto.AiRefineCallInputDto;
 import com.turbotikects.turbotikectsserver.dto.WorkflowActionTestResult;
+import com.turbotikects.turbotikectsserver.entitys.AiSettingsEntity;
 import com.turbotikects.turbotikectsserver.entitys.FieldDefinitionsEntity;
 import com.turbotikects.turbotikectsserver.entitys.TicketActivityLogEntity;
 import com.turbotikects.turbotikectsserver.entitys.TicketEntity;
@@ -65,13 +67,15 @@ public class McpActionExecutor {
     private final McpClientService mcpClientService;
     private final WorkflowService workflowService;
     private final FieldDefinitionsRepository fieldDefinitionsRepo;
+    private final AiSettingsService aiSettingsService;
 
     public McpActionExecutor(WorkflowItemRepository itemRepo, TicketRepository ticketRepo,
                               TicketActivityLogRepository activityLogRepo,
                               AesEncryptionUtils aes, AdminInboxService adminInboxService,
                               McpClientService mcpClientService,
                               @Lazy WorkflowService workflowService,
-                              FieldDefinitionsRepository fieldDefinitionsRepo) {
+                              FieldDefinitionsRepository fieldDefinitionsRepo,
+                              AiSettingsService aiSettingsService) {
         this.itemRepo = itemRepo;
         this.ticketRepo = ticketRepo;
         this.activityLogRepo = activityLogRepo;
@@ -80,6 +84,7 @@ public class McpActionExecutor {
         this.mcpClientService = mcpClientService;
         this.workflowService = workflowService;
         this.fieldDefinitionsRepo = fieldDefinitionsRepo;
+        this.aiSettingsService = aiSettingsService;
     }
 
     public void execute(WorkflowItemEntity item) {
@@ -320,18 +325,7 @@ public class McpActionExecutor {
 
         Object resultObject = buildResultObject(result);
         for (Map<String, Object> cap : listOf(call.get("responseCaptures"))) {
-            String name = str(cap.get("name"));
-            String resultPath = str(cap.get("resultPath"));
-            if (name == null || resultPath == null) continue;
-            try {
-                Object extracted = JsonPath.read(resultObject, resultPath);
-                vars.put(name, extracted);
-            } catch (Exception e) {
-                log.warn("[Mcp] Capture '{}' (resultPath {}) failed on tool '{}': {}", name, resultPath, toolName, e.getMessage());
-                if (warnings != null) {
-                    warnings.add("Capture '" + name + "' (resultPath " + resultPath + ") on tool '" + toolName + "' matched nothing in the response");
-                }
-            }
+            applyResponseCapture(resultObject, cap, toolName, vars, warnings);
         }
 
         if (trace != null) {
@@ -352,6 +346,77 @@ public class McpActionExecutor {
         }
     }
 
+    /**
+     * The single dispatch point for "how a response capture resolves" — shared by a real live call
+     * ({@link #runCall}) and the "Verify Mapping" dry-run ({@link #evaluateResponseCaptures}), so
+     * both ever have exactly one implementation. Mirrors ExternalApiActionExecutor's identical
+     * applyResponseCaptures/applyJsonPathCapture/applyLlmCapture split. Absent "mode" behaves
+     * exactly as "jsonpath" — every capture saved before "ai_summary" existed keeps resolving
+     * identically.
+     */
+    private void applyResponseCapture(Object resultObject, Map<String, Object> cap, String toolName,
+                                       Map<String, Object> vars, List<String> warnings) {
+        String name = str(cap.get("name"));
+        String resultPath = str(cap.get("resultPath"));
+        if (name == null || resultPath == null) return;
+        String mode = Optional.ofNullable(str(cap.get("mode"))).orElse("jsonpath");
+        if ("ai_summary".equals(mode)) {
+            applyAiSummaryCapture(resultObject, resultPath, str(cap.get("summaryInstruction")), name, toolName, vars, warnings);
+            return;
+        }
+        try {
+            Object extracted = JsonPath.read(resultObject, resultPath);
+            vars.put(name, extracted);
+        } catch (Exception e) {
+            log.warn("[Mcp] Capture '{}' (resultPath {}) failed on tool '{}': {}", name, resultPath, toolName, e.getMessage());
+            if (warnings != null) {
+                warnings.add("Capture '" + name + "' (resultPath " + resultPath + ") on tool '" + toolName + "' matched nothing in the response");
+            }
+        }
+    }
+
+    /**
+     * "AI Summary" capture — the admin selected a whole array/object branch in the Visual JSON
+     * Explorer (not a single leaf, since there's no one scalar to JSONPath-extract from a branch)
+     * and asked the AI to turn it into a human-readable HTML summary for a rich-text field. Calls
+     * the active AI provider LIVE every time this capture resolves — both here (a real ticket
+     * execution) and from {@link #evaluateResponseCaptures} ("Verify Mapping", a dry run against the
+     * already-captured response) — same deliberate exception as ExternalApiActionExecutor's "AI:
+     * describe what to extract" mode: every other capture mechanism in this class is 100%
+     * deterministic on purpose, this one mode is the sole, intentional live-AI-call exception. No
+     * active provider, or any failure, degrades exactly like a JsonPath miss — a warning, never a
+     * crash of the whole call/item.
+     */
+    private void applyAiSummaryCapture(Object resultObject, String resultPath, String summaryInstruction,
+                                        String name, String toolName, Map<String, Object> vars, List<String> warnings) {
+        Object branch;
+        try {
+            branch = JsonPath.read(resultObject, resultPath);
+        } catch (Exception e) {
+            log.warn("[Mcp] AI Summary capture '{}' (resultPath {}) failed on tool '{}': {}", name, resultPath, toolName, e.getMessage());
+            if (warnings != null) {
+                warnings.add("Capture '" + name + "' (resultPath " + resultPath + ") on tool '" + toolName + "' matched nothing in the response");
+            }
+            return;
+        }
+        AiSettingsEntity aiSettings = aiSettingsService.getActiveAi();
+        if (aiSettings == null) {
+            log.warn("[Mcp] AI Summary capture '{}' on tool '{}' skipped — no active AI provider configured", name, toolName);
+            if (warnings != null) {
+                warnings.add("Capture '" + name + "' (AI Summary) on tool '" + toolName + "' was skipped — no active AI provider is configured");
+            }
+            return;
+        }
+        Optional<String> html = aiSettingsService.summarizeAsHtml(aiSettings, branch, summaryInstruction);
+        if (html.isEmpty()) {
+            if (warnings != null) {
+                warnings.add("Capture '" + name + "' (AI Summary) on tool '" + toolName + "' — the AI could not summarize this data");
+            }
+            return;
+        }
+        vars.put(name, html.get());
+    }
+
     /** Bounded JSON-serialized slice of the real object captures ran against, for the "Auto-map from this response" AI feature. */
     private String rawResultForTrace(Object resultObject) {
         try {
@@ -362,11 +427,65 @@ public class McpActionExecutor {
         }
     }
 
-    /** Assembles a JSONPath-queryable object from a CallToolResult: prefers structuredContent, falls back to parsing the first TextContent as JSON, falls back to {"text": <concatenated text>} so $.text always works as an escape hatch. */
-    @SuppressWarnings("unchecked")
+    /** Assembles a JSONPath-queryable object from a CallToolResult: prefers structuredContent, falls back to {@link #parseAsQueryableObject} against the concatenated text content — either way, run through {@link #deepUnwrapJsonStrings} first (see its own javadoc for why). */
     private Object buildResultObject(McpSchema.CallToolResult result) {
-        if (result.structuredContent() != null) return result.structuredContent();
-        String text = extractText(result);
+        Object base = result.structuredContent() != null ? result.structuredContent() : parseAsQueryableObject(extractText(result));
+        return deepUnwrapJsonStrings(base, 0);
+    }
+
+    /**
+     * Real bug found live: a tool function typed to return a plain string (this codebase's
+     * generated scripts commonly do — {@code def some_tool(...) -> str: return json.dumps(data)})
+     * gets its structuredContent wrapped by the MCP Python SDK as a synthetic single-property
+     * envelope, {@code {"result": "<the JSON, still escaped as one big string>"}} — MCP's structured
+     * content requires an object schema, so a scalar return gets boxed rather than emitted as-is.
+     * Without unwrapping, EVERY resultPath needs a "$.result." prefix AND still can't reach past
+     * that string (JsonPath can't descend into an unparsed string value), and the "Map & Verify
+     * Output" step's JSON tree showed one giant unreadable string leaf instead of a real tree —
+     * exactly what an admin reported live. Recursively re-parses any string value that itself looks
+     * like a JSON object/array, so both a real capture's resultPath AND the tree an admin clicks
+     * through see the SAME fully-unwrapped structure, at any nesting depth (not just the top level —
+     * some MCP servers double-encode more than one layer deep). depth is a runaway guard only; real
+     * responses are never anywhere close to 10 levels of string-in-string encoding.
+     */
+    @SuppressWarnings("unchecked")
+    private Object deepUnwrapJsonStrings(Object value, int depth) {
+        if (depth > 10) return value;
+        if (value instanceof String s) {
+            String trimmed = s.trim();
+            boolean looksLikeJson = (trimmed.startsWith("{") && trimmed.endsWith("}"))
+                    || (trimmed.startsWith("[") && trimmed.endsWith("]"));
+            if (!looksLikeJson) return value;
+            try {
+                Object parsed = JsonPath.parse(trimmed).json();
+                if (parsed instanceof Map || parsed instanceof List) return deepUnwrapJsonStrings(parsed, depth + 1);
+            } catch (Exception ignored) {
+                // not actually JSON despite looking like it (e.g. a price range "{1-5}") — leave as-is
+            }
+            return value;
+        }
+        if (value instanceof List<?> list) {
+            List<Object> out = new ArrayList<>();
+            for (Object v : list) out.add(deepUnwrapJsonStrings(v, depth + 1));
+            return out;
+        }
+        if (value instanceof Map<?, ?> map) {
+            Map<String, Object> out = new LinkedHashMap<>();
+            for (Map.Entry<?, ?> e : map.entrySet()) out.put(String.valueOf(e.getKey()), deepUnwrapJsonStrings(e.getValue(), depth + 1));
+            return out;
+        }
+        return value;
+    }
+
+    /**
+     * Parses raw text as JSON, falling back to {"text": <text>} so $.text always works as an
+     * escape hatch — shared by {@link #buildResultObject} (a real live call's result) and
+     * {@link #evaluateResponseCaptures} (re-evaluating an already-captured rawResponse string, no
+     * new call), so "how a response becomes queryable" has exactly one implementation used by both
+     * a real execution and its "Verify Mapping" dry-run counterpart — the same guarantee
+     * ExternalApiActionExecutor.evaluateResponseCaptures already relies on via applyResponseCaptures.
+     */
+    private Object parseAsQueryableObject(String text) {
         if (text != null && !text.isBlank()) {
             try {
                 Object parsed = JsonPath.parse(text).json();
@@ -382,6 +501,45 @@ public class McpActionExecutor {
             }
         }
         return Map.of("text", text != null ? text : "");
+    }
+
+    /**
+     * "Verify Mapping" — AI Workflow Builder's Map & Verify Output step, mcp_tool sibling of
+     * ExternalApiActionExecutor.evaluateResponseCaptures (see its javadoc for the full rationale).
+     * Re-evaluates each call's (AI-proposed, tree-click-added, or admin-edited) responseCaptures
+     * against a response ALREADY captured by an earlier "Test this call now" run — no new live MCP
+     * tool call. rawResponse here is whatever TestActionModal's call trace stored for that call
+     * (rawResult/rawResponse — the literal object/text the real run captured against), so this uses
+     * the exact same {@link #parseAsQueryableObject}+{@code JsonPath.read} pair a real execution
+     * would, guaranteeing this dry-run agrees with what would actually happen on a real ticket.
+     */
+    public WorkflowActionTestResult evaluateResponseCaptures(List<AiRefineCallInputDto> calls) {
+        Map<String, Object> vars = new LinkedHashMap<>();
+        List<String> warnings = new ArrayList<>();
+        List<Map<String, Object>> trace = new ArrayList<>();
+        boolean anyCaptureConfigured = false;
+        for (AiRefineCallInputDto c : calls) {
+            if (c.getRawResponse() == null || c.getRawResponse().isBlank()) continue;
+            List<Map<String, Object>> captures = c.getExistingResponseCaptures() != null ? c.getExistingResponseCaptures() : List.of();
+            if (!captures.isEmpty()) anyCaptureConfigured = true;
+            Object resultObject = deepUnwrapJsonStrings(parseAsQueryableObject(c.getRawResponse()), 0);
+            for (Map<String, Object> cap : captures) {
+                applyResponseCapture(resultObject, cap, c.getName(), vars, warnings);
+            }
+            Map<String, Object> entry = new LinkedHashMap<>();
+            entry.put("callId", c.getId());
+            entry.put("name", c.getName());
+            trace.add(entry);
+        }
+        // Mirrors ExternalApiActionExecutor.evaluateResponseCaptures' identical fix: a totally-empty
+        // result (every capture matched nothing) must be reported as a real failure, not silently
+        // read as "verified fine" by the wizard.
+        if (anyCaptureConfigured && vars.isEmpty() && !warnings.isEmpty()) {
+            return WorkflowActionTestResult.failure(String.join("; ", warnings), trace);
+        }
+        WorkflowActionTestResult result = WorkflowActionTestResult.success(new LinkedHashMap<>(vars), trace);
+        if (!warnings.isEmpty()) result.setError(String.join("; ", warnings));
+        return result;
     }
 
     private String extractText(McpSchema.CallToolResult result) {

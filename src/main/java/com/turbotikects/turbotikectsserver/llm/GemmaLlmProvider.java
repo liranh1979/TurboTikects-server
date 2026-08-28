@@ -61,6 +61,16 @@ public class GemmaLlmProvider implements LlmProvider {
         return send(settings, messages, true);
     }
 
+    // gemma4:e2b's real trained context_length (confirmed live via GET /api/show → model_info) is
+    // 131072 — the ceiling numCtx should never exceed regardless of how large a prompt gets.
+    private static final int MAX_NUM_CTX = 131_072;
+    // Floor for typical small calls (ticket chat replies, single-capture extraction, field
+    // mapping) — matches this constant's previous fixed value, kept as the minimum so those
+    // unaffected call sites see no behavior change.
+    private static final int MIN_NUM_CTX = 16_384;
+    // Reserved headroom for the model's own reply, on top of whatever the input needs.
+    private static final int NUM_CTX_OUTPUT_RESERVE = 4096;
+
     @Override
     public String send(AiSettingsEntity settings, List<LlmStructure> messages, boolean expectJson) throws IOException {
         synchronized (OLLAMA_CALL_LOCK) {
@@ -74,9 +84,28 @@ public class GemmaLlmProvider implements LlmProvider {
                 // reply — which looks exactly like "the model returned almost nothing", because it
                 // effectively had nowhere left to write. Explicitly requesting a larger context via
                 // numCtx fixes this at the call level without needing to edit the model's own
-                // Ollama configuration. Larger context uses more RAM (or VRAM now that this
-                // container runs on GPU — see docker-compose.yml's nvidia device reservation), so
-                // this is a reasonable, low-risk tradeoff for correctness either way.
+                // Ollama configuration.
+                //
+                // A second, more severe real incident found live (FEAT-19's MCP-wrapper "Analyze"
+                // step, driven by a fetched real API doc page — serpapi.com/google-flights-api,
+                // ~54.6KB / ~18,600 tokens after Jsoup cleanup): a fixed numCtx(16384) SILENTLY
+                // truncates the prompt rather than erroring — verified live via GET /api/ps and
+                // comparing prompt_eval_count across identical calls: at numCtx=16384 Ollama only
+                // evaluated ~950-1100 tokens of a ~19,000-token prompt (the vast majority of the doc
+                // never reached the model at all), while numCtx=65536 correctly evaluated all
+                // ~18,600+ — the model then visibly fabricated a generic, textbook-shaped "flights
+                // API" (invented endpoints like "/v1/flights/search", never once using the doc's
+                // real parameter names departure_id/arrival_id) instead of erroring, which looks
+                // exactly like "the AI is ignoring the documentation" rather than a context-size bug.
+                // A single global fixed value can't serve both cases well — bumping it enough for a
+                // full doc page would waste RAM/VRAM on every small call this provider also handles
+                // (ticket chat, single-field extraction, etc.) — so numCtx is now sized dynamically
+                // per call from the actual combined message length (chars/3 is a deliberately
+                // conservative, token-count-OVERestimating ratio — safer to over-reserve context
+                // than under-reserve and silently truncate again), clamped to [16384, 131072] (this
+                // model's real trained ceiling, confirmed via GET /api/show's model_info). Verified
+                // live: this formula applied to the real 54.6KB doc call above requests numCtx≈23,071
+                // and Ollama then evaluates the full ~18,600-token prompt with no truncation.
                 //
                 // A separate, distinct problem from context size: every AI method in TemplateService
                 // asks for "ONLY the JSON" in prose and hopes the model complies — a real, GPU speed
@@ -89,10 +118,14 @@ public class GemmaLlmProvider implements LlmProvider {
                 // (still just as capable of, say, an empty array) — that's the sanitize*/MANDATORY
                 // CHECK prompt rules' job, unchanged — but the specific "isn't even valid JSON" class
                 // of error this fixes is exactly the one reported live.
+                int estimatedInputChars = messages.stream().mapToInt(m -> m.getContent() == null ? 0 : m.getContent().length()).sum();
+                int estimatedInputTokens = estimatedInputChars / 3;
+                int numCtx = Math.min(MAX_NUM_CTX, Math.max(MIN_NUM_CTX, estimatedInputTokens + NUM_CTX_OUTPUT_RESERVE));
+
                 var builder = OllamaChatModel.builder()
                         .baseUrl(baseUrl)
                         .modelName(settings.getModelName())
-                        .numCtx(16384);
+                        .numCtx(numCtx);
                 if (expectJson) builder.responseFormat(ResponseFormat.JSON);
                 ChatModel model = builder.build();
                 ChatResponse response = model.chat(LangChain4jSupport.toChatMessages(messages));

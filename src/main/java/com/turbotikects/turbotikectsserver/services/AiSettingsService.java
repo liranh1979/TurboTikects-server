@@ -202,4 +202,57 @@ public class AiSettingsService {
         }
     }
 
+    /**
+     * "AI Summary" response captures (mcp_tool's Map & Verify Output step — admin selects a whole
+     * array/object in the response tree, not a single leaf, since there's no single scalar to
+     * JSONPath-extract from a branch). Sibling of {@link #extractValueWithLlm} — same live-every-
+     * time-it-resolves contract (design-time verify AND real ticket execution), same graceful-empty-
+     * Optional failure mode — but returns an HTML fragment for a "rich-text" field instead of one
+     * scalar value.
+     * <p>
+     * Kept to a small, explicit allow-list of tags in the prompt rather than trusted freely: this
+     * HTML is rendered later via RichTextEditor (Tiptap), which only reconstructs node/mark types
+     * its configured extensions recognize — an unrecognized tag (script, style, an event-handler
+     * attribute) is dropped on render, not executed, but asking for exactly what will render
+     * correctly avoids the AI wasting effort on markup that would just be stripped.
+     */
+    public Optional<String> summarizeAsHtml(AiSettingsEntity aiSettings, Object jsonData, String customInstruction) {
+        try {
+            String json = new ObjectMapper().writeValueAsString(jsonData);
+            String capped = json.length() > MAX_LLM_EXTRACTION_RESPONSE_CHARS
+                    ? json.substring(0, MAX_LLM_EXTRACTION_RESPONSE_CHARS) + "…" : json;
+
+            LlmStructure system = new LlmStructure();
+            system.setRole("system");
+            system.setContent("""
+                    You write a short, human-readable HTML summary of a JSON data snippet for a
+                    rich-text field on a support ticket. Return ONLY a strict JSON object of the form
+                    {"html": "<the HTML fragment>"} — no markdown, no explanation, no extra keys.
+                    Rules:
+                    - Use only these tags: p, br, ul, ol, li, b, strong, i, em, h3, h4, a. No script,
+                      style, iframe, or event-handler attributes (onclick, onload, etc.) — they will
+                      never render and are simply wasted effort.
+                    - Cover every field actually present in the data — don't skip values.
+                    - Write for a human reading a ticket, not a developer — plain language, no raw
+                      JSON keys quoted verbatim unless that key IS the natural human label.
+                    - If the data is empty or genuinely has nothing to summarize, return
+                      {"html": null}.
+                    """);
+
+            LlmStructure user = new LlmStructure();
+            user.setRole("user");
+            user.setContent((customInstruction == null || customInstruction.isBlank() ? "" : "Specific ask: " + customInstruction + "\n\n")
+                    + "Data:\n" + capped);
+
+            String raw = sendLlmRequest(aiSettings, List.of(system, user));
+            String cleaned = raw.replaceAll("(?s)```[a-zA-Z]*\\n?", "").replace("```", "").trim();
+            Map<String, Object> parsed = new ObjectMapper().readValue(cleaned, new TypeReference<>() {});
+            Object html = parsed.get("html");
+            return (html instanceof String s && !s.isBlank()) ? Optional.of(s) : Optional.empty();
+        } catch (Exception e) {
+            log.warn("[AiSettingsService] summarizeAsHtml failed: {}", e.getMessage());
+            return Optional.empty();
+        }
+    }
+
 }

@@ -56,3 +56,10 @@ src/main/resources/static/
 /SSL/localhost.pfx
 /uploads/branding/logo.jpg
 *.log
+
+### Maven build output (this is a Maven project — the Gradle `build/` rule above doesn't cover it) ###
+/target/
+
+### AI-Generated MCP Servers (FEAT-19) — deployed scripts + per-server Python venvs are runtime
+### state (MCP_SCRIPTS_PATH), not source; venvs alone run tens of MB each. ###
+/mcp-scripts/

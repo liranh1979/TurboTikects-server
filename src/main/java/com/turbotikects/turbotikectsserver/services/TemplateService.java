@@ -15,6 +15,8 @@ import com.turbotikects.turbotikectsserver.repositorys.TemplateRepository;
 import com.turbotikects.turbotikectsserver.repositorys.TemplateVersionRepository;
 import com.turbotikects.turbotikectsserver.utils.AesEncryptionUtils;
 import lombok.extern.slf4j.Slf4j;
+import org.jsoup.Jsoup;
+import org.jsoup.nodes.Document;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -266,13 +268,15 @@ public class TemplateService {
      * hardened over LdapMappingService's equivalent (which passes the LLM's suggestedFieldType
      * straight through with no validation): drops entries with no usable key or that duplicate an
      * already-existing workflow field, de-dupes repeated suggestions, and whitelists
-     * suggestedFieldType to the same text/number/date/checkbox set SimpleItemFieldsEditor's
-     * RENDERABLE_TYPES already uses for the identical "fillable workflow field" concept — anything
-     * else (or missing) defaults to "text" rather than being trusted.
+     * suggestedFieldType to text/number/date/checkbox/rich-text — anything else (or missing)
+     * defaults to "text" rather than being trusted. "rich-text" added for the "AI Summary" response
+     * capture (mcp_tool's Map & Verify Output step) — its HTML output needs a rich-text field to
+     * land in, the one type SimpleItemFieldsEditor's RENDERABLE_TYPES deliberately excludes since a
+     * Simple item's own hand-filled mini-fields don't need it.
      */
     @SuppressWarnings("unchecked")
     private List<Map<String, Object>> sanitizeMissingWorkflowFields(Map<String, Object> draft, Set<String> existingKeys) {
-        Set<String> validFieldTypes = Set.of("text", "number", "date", "checkbox");
+        Set<String> validFieldTypes = Set.of("text", "number", "date", "checkbox", "rich-text");
         List<Map<String, Object>> missing = new ArrayList<>();
         Set<String> seenKeys = new HashSet<>();
         if (draft.get("missingWorkflowFields") instanceof List<?> list) {
@@ -648,7 +652,91 @@ public class TemplateService {
                     "The AI did not return valid JSON — it may not have understood the request or the tool schema was too complex for it. Try a shorter/clearer intent, a smaller set of tools, or a different AI provider/model.");
         }
         sanitizeMcpDraft(draft, existingWorkflowFieldKeys(dto.getWorkflowFields()));
+        ensureCompleteArgumentMappings(draft, dto.getTools());
         return draft;
+    }
+
+    /**
+     * Real bug found live: which arguments a call's argumentMappings actually covers was left
+     * entirely up to the LLM — a weak/local model reliably handled the "obviously novel" arguments
+     * (inventing a "this.<key>" + missingWorkflowFields suggestion, e.g. arrival_id/type/currency
+     * for a Google-Flights-shaped tool) but silently DROPPED others it apparently found harder
+     * (departure_id/return_date), leaving them missing from argumentMappings altogether. That alone
+     * wasn't visibly broken — the frontend's FieldRefSelect falls back an unmapped ticketField to
+     * "ticket.title" so the dropdown never looks "empty" — which is exactly the trap: a dropped
+     * argument silently LOOKED like a deliberate (if wrong) mapping instead of an obvious gap. As
+     * the admin put it: which arguments exist isn't an AI decision at all — it's a deterministic
+     * fact of the tool's real inputSchema — so this is enforced here in code, not left to the
+     * prompt: for every property in the CHOSEN tool's real inputSchema.properties with no
+     * corresponding argumentMappings entry, synthesize one deterministically (an unused
+     * "this.<toolArgument>" key, mirroring the exact same missingWorkflowFields suggestion shape
+     * the AI itself would have produced for a genuinely novel field) so every real argument always
+     * ends up mapped to something visible and correctable, never silently absent.
+     */
+    @SuppressWarnings("unchecked")
+    private void ensureCompleteArgumentMappings(Map<String, Object> draft, List<Map<String, Object>> tools) {
+        if (tools == null) return;
+        Map<String, Map<String, Object>> toolsByName = new HashMap<>();
+        for (Map<String, Object> tool : tools) {
+            if (tool.get("name") instanceof String name) toolsByName.put(name, tool);
+        }
+
+        List<Map<String, Object>> missingWorkflowFields = new ArrayList<>();
+        if (draft.get("missingWorkflowFields") instanceof List<?> l) {
+            for (Object o : l) if (o instanceof Map<?, ?> m) missingWorkflowFields.add((Map<String, Object>) m);
+        }
+        Set<String> suggestedKeys = new HashSet<>();
+        for (Map<String, Object> s : missingWorkflowFields) {
+            if (s.get("suggestedFieldKey") instanceof String k) suggestedKeys.add(k);
+        }
+
+        List<?> calls = draft.get("calls") instanceof List<?> l ? l : List.of();
+        for (Object c : calls) {
+            if (!(c instanceof Map)) continue;
+            Map<String, Object> call = (Map<String, Object>) c;
+            Map<String, Object> tool = call.get("toolName") instanceof String tn ? toolsByName.get(tn) : null;
+            if (tool == null) continue;
+            Set<String> realArgs = new LinkedHashSet<>();
+            if (tool.get("inputSchema") instanceof Map<?, ?> schema && schema.get("properties") instanceof Map<?, ?> props) {
+                for (Object k : props.keySet()) if (k instanceof String s) realArgs.add(s);
+            }
+            if (realArgs.isEmpty()) continue;
+
+            List<Map<String, Object>> argMappings = new ArrayList<>();
+            if (call.get("argumentMappings") instanceof List<?> l2) {
+                for (Object o : l2) if (o instanceof Map<?, ?> m) argMappings.add((Map<String, Object>) m);
+            }
+            Set<String> mappedArgs = new HashSet<>();
+            for (Map<String, Object> m : argMappings) {
+                if (m.get("toolArgument") instanceof String ta) mappedArgs.add(ta);
+            }
+
+            for (String realArg : realArgs) {
+                if (mappedArgs.contains(realArg)) continue;
+                String key = uniqueWorkflowFieldKey(realArg, suggestedKeys);
+                Map<String, Object> synthesized = new LinkedHashMap<>();
+                synthesized.put("toolArgument", realArg);
+                synthesized.put("ticketField", "this." + key);
+                argMappings.add(synthesized);
+                Map<String, Object> suggestion = new LinkedHashMap<>();
+                suggestion.put("suggestedFieldKey", key);
+                suggestion.put("suggestedLabel", key);
+                suggestion.put("suggestedFieldType", "text");
+                missingWorkflowFields.add(suggestion);
+                suggestedKeys.add(key);
+                log.warn("[TemplateService] aiSuggestMcpAction: tool '{}' argument '{}' was missing from the AI's argumentMappings — synthesized a fallback 'this.{}' mapping", call.get("toolName"), realArg, key);
+            }
+            call.put("argumentMappings", argMappings);
+        }
+        draft.put("missingWorkflowFields", missingWorkflowFields);
+    }
+
+    /** De-dupes a synthesized workflow field key against keys already claimed this same draft pass — a second missed argument sharing the same name (unlikely, but two different tools/calls could) must not silently collide with the first's suggestion. */
+    private String uniqueWorkflowFieldKey(String base, Set<String> taken) {
+        if (!taken.contains(base)) return base;
+        int n = 2;
+        while (taken.contains(base + "_" + n)) n++;
+        return base + "_" + n;
     }
 
     /**
@@ -687,18 +775,30 @@ public class TemplateService {
     private static final int MAX_FETCHED_DOC_CHARS = 200_000;
 
     /**
-     * Step 1 helper (external_api) — fetches an admin-given documentation URL's raw content
-     * server-side (avoids a browser CORS block the frontend would otherwise hit) so it can be
-     * reviewed/edited in the Documentation textarea before Discover Endpoints runs. The model is
-     * expected to read the remaining markup directly — this only strips {@code <script>}/
-     * {@code <style>} blocks, pure noise for documentation purposes that would otherwise bloat the
-     * prompt for no benefit, regardless of whether the active model handles raw HTML well.
-     * Deliberately more defensive than this codebase's existing outbound-fetch code (MCP tool
-     * discovery, external_api live test calls) — neither of those validates the target host at
-     * all, but this endpoint's whole point is "fetch whatever URL an admin pastes in," which is a
-     * more direct SSRF vector than either of those (both point at a URL the admin is configuring
+     * Step 1 helper (external_api, and FEAT-19's MCP wrapper wizard) — fetches an admin-given
+     * documentation URL's content server-side (avoids a browser CORS block the frontend would
+     * otherwise hit) so it can be reviewed/edited in the Documentation textarea before analysis
+     * runs. Deliberately more defensive than this codebase's existing outbound-fetch code (MCP
+     * tool discovery, external_api live test calls) — neither of those validates the target host
+     * at all, but this endpoint's whole point is "fetch whatever URL an admin pastes in," which is
+     * a more direct SSRF vector than either of those (both point at a URL the admin is configuring
      * a specific integration against), so it additionally rejects loopback/private/link-local
      * targets.
+     * <p>
+     * Uses Jsoup (already a project dependency — EmailProcessorService/KbAiService/
+     * ReportExportService all use it) to parse the page and extract real body text, stripping
+     * {@code <script>/<style>/<nav>/<header>/<footer>/<aside>} and any element whose class/id
+     * looks like sidebar/navbar/menu chrome — not just {@code <script>/<style>}. A real bug found
+     * live: a plain script/style-only strip left the page's raw HTML markup in the prompt, and for
+     * a typical modern docs site (e.g. a large left-hand product-navigation sidebar repeated on
+     * every page) the actual documentation content didn't start until roughly 175,000 characters
+     * in — past both the old 200K-char cap's effective usefulness and, more importantly, far
+     * beyond the active local model's context window (Ollama/Gemma defaults to ~16K tokens ≈ 64K
+     * characters), so the model never actually saw the real content at all — indistinguishable
+     * from "ignoring the document" even though the fetch itself succeeded. Verified against a real
+     * page (serpapi.com/google-flights-api): raw cleaned-HTML size 310KB with real content
+     * starting at character ~175,000, vs. Jsoup body-text extraction at 54.6KB with real content
+     * starting at character ~180 — comfortably inside any provider's context window.
      */
     public Map<String, Object> fetchDocumentationUrl(FetchDocumentationUrlRequestDto dto)
             throws IOException, InterruptedException {
@@ -750,9 +850,18 @@ public class TemplateService {
         }
 
         String body = response.body() != null ? response.body() : "";
-        String cleaned = body
-                .replaceAll("(?is)<script.*?</script>", "")
-                .replaceAll("(?is)<style.*?</style>", "");
+        String cleaned;
+        try {
+            Document jsoupDoc = Jsoup.parse(body, uri.toString());
+            jsoupDoc.select("script, style, nav, header, footer, aside, noscript, svg, iframe, form").remove();
+            jsoupDoc.select("[class*=sidebar], [id*=sidebar], [class*=navbar], [id*=navbar], [class*=menu], [id*=menu]").remove();
+            cleaned = jsoupDoc.body() != null ? jsoupDoc.body().text() : jsoupDoc.text();
+        } catch (Exception e) {
+            // Not real HTML (e.g. a plain-text or Markdown doc URL) — Jsoup still parses it into a
+            // single text node without throwing in practice, but fall back to the raw body just in
+            // case, rather than losing the fetch entirely.
+            cleaned = body;
+        }
         if (cleaned.length() > MAX_FETCHED_DOC_CHARS) {
             log.warn("[TemplateService] fetchDocumentationUrl: content from {} truncated from {} to {} chars",
                     host, cleaned.length(), MAX_FETCHED_DOC_CHARS);

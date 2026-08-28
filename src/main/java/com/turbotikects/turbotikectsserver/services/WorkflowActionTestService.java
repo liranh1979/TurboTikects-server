@@ -67,8 +67,14 @@ public class WorkflowActionTestService {
         return WorkflowActionTestResult.failure("Unsupported action type: " + dto.getType(), List.of());
     }
 
-    /** "Verify Captures" — see ExternalApiActionExecutor.evaluateResponseCaptures' javadoc: re-checks JsonPaths against an already-fetched response, no new live call. */
-    public WorkflowActionTestResult evaluateResponseCaptures(List<AiRefineCallInputDto> calls) {
+    /**
+     * "Verify Captures"/"Verify Mapping" — see ExternalApiActionExecutor/McpActionExecutor's
+     * evaluateResponseCaptures javadocs: re-checks resultPath/jsonPath against an already-fetched
+     * response, no new live call. type defaults to "external_api" — every caller built before
+     * mcp_tool support existed never sent one at all.
+     */
+    public WorkflowActionTestResult evaluateResponseCaptures(String type, List<AiRefineCallInputDto> calls) {
+        if ("mcp_tool".equals(type)) return mcpActionExecutor.evaluateResponseCaptures(calls);
         return externalApiActionExecutor.evaluateResponseCaptures(calls);
     }
 
