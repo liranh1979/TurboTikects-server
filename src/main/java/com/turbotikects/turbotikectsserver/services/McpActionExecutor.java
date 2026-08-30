@@ -179,8 +179,23 @@ public class McpActionExecutor {
             List<String> warnings = new ArrayList<>();
 
             Map<String, Object> vars = new LinkedHashMap<>();
+            boolean anyCaptureConfigured = false;
             for (Map<String, Object> call : calls) {
+                if (!listOf(call.get("responseCaptures")).isEmpty()) anyCaptureConfigured = true;
                 runCall(client, call, ticket, item, vars, null, warnings);
+            }
+
+            // Mirrors evaluateResponseCaptures' identical fix: a tool call can come back
+            // isError=false (the script itself caught a downstream failure — e.g. the target API
+            // rejected the request — and returned a normal JSON error payload instead of throwing)
+            // while EVERY configured capture still matches nothing, because none of the expected
+            // fields exist in that error payload. Previously this still landed as "done" with the
+            // real problem buried in lastError — found live on a real ticket where every capture on
+            // a formally-successful search_google_flights call failed because the API rejected an
+            // invalid date range, yet the item showed as completed.
+            if (anyCaptureConfigured && vars.isEmpty() && !warnings.isEmpty()) {
+                fail(item, String.join("; ", warnings));
+                return;
             }
 
             // A real bug found live: the "ticket" loaded at the top of this method can be stale by
@@ -313,7 +328,17 @@ public class McpActionExecutor {
                 }
                 arguments.put(toolArgument, vars.get(captureName));
             } else if (ticketField != null) {
-                arguments.put(toolArgument, resolveInputField(ticket, item, ticketField));
+                // Omit the key entirely rather than putting an explicit null: a tool parameter
+                // typed e.g. "type: str = None" (optional, defaults to None if the caller never
+                // supplies it) still gets strictly validated against "str" by the MCP SDK's
+                // generated Pydantic model when the argument IS present in the call, even with a
+                // null value — an explicit null fails validation where an absent key falls back
+                // to the Python-side default and succeeds. A blank ticket/action-item field must
+                // behave like "not supplied", not like "supplied as null".
+                Object value = resolveInputField(ticket, item, ticketField);
+                if (value != null) {
+                    arguments.put(toolArgument, value);
+                }
             }
         }
 

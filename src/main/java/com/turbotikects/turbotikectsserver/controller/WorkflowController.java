@@ -64,6 +64,22 @@ public class WorkflowController {
     }
 
     /**
+     * Manager-only: manually re-runs a completed/blocked external_api or mcp_tool action item —
+     * e.g. after fixing a bad JSONPath or ticket data that made the original run fail/capture
+     * nothing. Gated tighter than assertCanViewItem's read/assignee rules since this re-triggers a
+     * real external call, not just a view.
+     */
+    @PostMapping("/workflow/items/{id}/retry")
+    public WorkflowItemDto retryItem(@PathVariable Long id, HttpServletRequest request) {
+        UserDto caller = currentUser(request);
+        if (!isManager(caller)) {
+            throw new org.springframework.web.server.ResponseStatusException(
+                    org.springframework.http.HttpStatus.FORBIDDEN, "Only a manager can retry a workflow action");
+        }
+        return workflowService.retryItem(id);
+    }
+
+    /**
      * Approver (in-app path): resolves the item's current pending approval level. The one-click
      * email token flow (FEAT-06 Phase 2) will call the same ApprovalService.recordDecision from a
      * separate public, no-auth controller — this one requires a session, for an approver acting

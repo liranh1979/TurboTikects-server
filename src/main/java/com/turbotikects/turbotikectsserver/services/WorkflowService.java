@@ -265,6 +265,31 @@ public class WorkflowService {
         }
     }
 
+    /**
+     * Manually re-runs a completed/blocked external_api or mcp_tool item — e.g. after an admin
+     * fixes a bad JSONPath, a bad ticket value, or an argument mapping that made the original run
+     * fail or capture nothing. cascadeTicketStatus only ever activates 'pending' items (plus
+     * resuming suspended/canceled), so a 'done' or 'blocked' item otherwise has no way back to
+     * running short of re-seeding the whole ticket — found live while iterating on a real MCP
+     * mapping fix with no way to re-test the same ticket. Reuses activateItem unchanged so a retry
+     * behaves identically to the item's original activation (same in_progress transition, same
+     * dispatch-by-type).
+     */
+    @Transactional
+    public WorkflowItemDto retryItem(Long id) {
+        WorkflowItemEntity item = workflowItemRepo.findById(id)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Workflow item not found"));
+        if (!"external_api".equals(item.getType()) && !"mcp_tool".equals(item.getType())) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Only external_api/mcp_tool action items can be retried");
+        }
+        if ("in_progress".equals(item.getStatus())) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "This action is already running");
+        }
+        item.setLastError(null);
+        activateItem(item, item.getTicketId());
+        return toDto(item, loadDisplayNames(List.of(item)));
+    }
+
     // ── ITEM COMPLETION ───────────────────────────────────────────────────────
 
     /**
