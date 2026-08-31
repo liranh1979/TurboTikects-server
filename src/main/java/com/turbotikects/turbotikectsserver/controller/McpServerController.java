@@ -146,6 +146,53 @@ public class McpServerController {
         return mcpServerService.askAiFix(id, dto, currentUserId(request));
     }
 
+    // ── EXTERNAL SERVERS ─────────────────────────────────────────────────────
+    // Deliberately MANAGE_FIELDS-only, no super-admin check — an external row never spawns an OS
+    // process (unlike everything above), so it's the same trust level as building the
+    // templates/workflows that will call it: anyone who can build a template can register the
+    // external MCP server that template's mcp_tool action items need. See V135's migration note.
+
+    @RequirePermission("MANAGE_FIELDS")
+    @PostMapping("/external")
+    public McpServerDto createExternal(@RequestBody McpExternalServerCreateDto dto) {
+        return mcpServerService.createExternal(dto);
+    }
+
+    @RequirePermission("MANAGE_FIELDS")
+    @PatchMapping("/external/{id}")
+    public McpServerDto updateExternal(@PathVariable Long id, @RequestBody McpExternalServerUpdateDto dto) {
+        return mcpServerService.updateExternal(id, dto);
+    }
+
+    @RequirePermission("MANAGE_FIELDS")
+    @DeleteMapping("/external/{id}")
+    public void deleteExternal(@PathVariable Long id) {
+        mcpServerService.delete(id);
+    }
+
+    @RequirePermission("MANAGE_FIELDS")
+    @PostMapping("/external/{id}/test")
+    public Map<String, Object> testExternal(@PathVariable Long id) {
+        return mcpServerService.testExternalConnection(id);
+    }
+
+    @RequirePermission("MANAGE_FIELDS")
+    @GetMapping("/external/{id}/oauth2/authorize")
+    public Map<String, String> externalOauthAuthorize(@PathVariable Long id) {
+        return Map.of("authUrl", mcpServerService.buildExternalAuthorizeUrl(id));
+    }
+
+    /** Hit by the OAuth provider's browser redirect (the admin's own browser, same authenticated
+     * session that opened the popup) — MANAGE_FIELDS-gated like the rest of this section, not a
+     * public endpoint. state = the server id, same minimal binding EmailMailboxController's
+     * equivalent callback already uses. */
+    @RequirePermission("MANAGE_FIELDS")
+    @GetMapping("/oauth2/callback")
+    public String externalOauthCallback(@RequestParam String code, @RequestParam String state) {
+        mcpServerService.handleExternalOAuth2Callback(Long.parseLong(state), code);
+        return "<html><body><script>window.close();</script><p>Authorized. You can close this window.</p></body></html>";
+    }
+
     private void requireSuperAdmin(HttpServletRequest req) {
         UserDto caller = (UserDto) req.getAttribute("currentUser");
         if (caller == null || !caller.isSuperAdmin())

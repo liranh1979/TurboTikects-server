@@ -96,8 +96,17 @@ public class McpClientService {
             if ("api_key".equals(authType)) {
                 String header = (headerName != null && !headerName.isBlank()) ? headerName : "X-API-Key";
                 builder.httpRequestCustomizer((b, method, endpoint, body, ctx) -> b.header(header, token));
+            } else if ("basic".equals(authType)) {
+                // token is already the base64-encoded "user:pass" combo — resolved by the caller
+                // (McpServerService.resolveConnectionAuth), same as OAuth2 tokens are resolved to a
+                // plain bearer token before reaching here. Mirrors ExternalApiActionExecutor.applyAuth's
+                // basic-auth branch.
+                builder.httpRequestCustomizer((b, method, endpoint, body, ctx) ->
+                        b.header("Authorization", "Basic " + token));
             } else {
-                // Default/legacy behavior: any non-"api_key" auth with a token present is bearer.
+                // Default/legacy behavior: any other auth type with a token present is bearer —
+                // this is also where a resolved OAuth2 access token (client-credentials or
+                // authorization-code) arrives, already exchanged/refreshed by the caller.
                 builder.httpRequestCustomizer((b, method, endpoint, body, ctx) ->
                         b.header("Authorization", "Bearer " + token));
             }

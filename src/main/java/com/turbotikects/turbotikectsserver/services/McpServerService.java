@@ -20,10 +20,12 @@ import org.springframework.web.server.ResponseStatusException;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.time.LocalDateTime;
 import java.util.*;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
@@ -149,9 +151,11 @@ public class McpServerService {
         if (entity.isSystem()) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "Built-in MCP servers cannot be deleted.");
         }
-        stopInternal(id);
-        registry.remove(id);
-        deleteScriptDir(id);
+        if ("generated".equals(entity.getServerKind())) {
+            stopInternal(id);
+            registry.remove(id);
+            deleteScriptDir(id);
+        }
         repo.delete(entity);
     }
 
@@ -340,6 +344,268 @@ public class McpServerService {
         String recentLogs = registry.recentLogs(id, 100);
         return aiService.fixScript(entity.getAiChatSessionId(), entity.getScriptContent(), recentLogs,
                 running.lastFailedToolCallSummary, dto.getAdminDescription(), userId);
+    }
+
+    // ── EXTERNAL SERVERS (no process, MANAGE_FIELDS-gated — see McpServerController) ───────────
+
+    /** Resolved, ready-to-use connection details for an MCP transport call — OAuth2 types are
+     * resolved to a real bearer access token here (refreshing if needed), so McpClientService never
+     * has to know the difference between a static token and one obtained via OAuth2. */
+    public record ResolvedAuth(String serverUrl, String authType, String headerName, String token) {}
+
+    @Transactional
+    public McpServerDto createExternal(McpExternalServerCreateDto dto) {
+        if (dto.getName() == null || dto.getName().isBlank())
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "name is required");
+        if (dto.getServerUrl() == null || dto.getServerUrl().isBlank())
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "server_url is required");
+        McpServerEntity entity = new McpServerEntity();
+        entity.setServerKind("external");
+        entity.setName(dto.getName());
+        entity.setDescription(dto.getDescription());
+        entity.setServerUrl(dto.getServerUrl());
+        entity.setEnabled(true);
+        entity.setSystem(false);
+        applyConnectionAuth(entity, dto.getAuth());
+        entity = repo.save(entity);
+        return toDto(entity);
+    }
+
+    @Transactional
+    public McpServerDto updateExternal(Long id, McpExternalServerUpdateDto dto) {
+        McpServerEntity entity = findExternalOrThrow(id);
+        if (dto.getName() != null) entity.setName(dto.getName());
+        if (dto.getDescription() != null) entity.setDescription(dto.getDescription());
+        if (dto.getServerUrl() != null) entity.setServerUrl(dto.getServerUrl());
+        if (dto.getAuth() != null) applyConnectionAuth(entity, dto.getAuth());
+        entity = repo.save(entity);
+        return toDto(entity);
+    }
+
+    /** Live discovery against the real server, using its currently-saved (and, for OAuth2,
+     * freshly-resolved) auth — same underlying call McpClientService.discoverTools already provides
+     * for built-in servers, just with this app's own auth resolution in front of it. */
+    public Map<String, Object> testExternalConnection(Long id) {
+        McpServerEntity entity = findExternalOrThrow(id);
+        try {
+            ResolvedAuth auth = resolveConnectionAuth(entity);
+            List<McpSchema.Tool> tools = mcpClientService.discoverTools(auth.serverUrl(), auth.authType(), auth.headerName(), auth.token());
+            Map<String, Object> out = new LinkedHashMap<>();
+            out.put("tools", tools.stream().map(t -> {
+                Map<String, Object> tm = new LinkedHashMap<>();
+                tm.put("name", t.name());
+                tm.put("description", t.description() == null ? "" : t.description());
+                tm.put("input_schema", t.inputSchema());
+                return tm;
+            }).collect(Collectors.toList()));
+            return out;
+        } catch (Exception e) {
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "Could not connect to the external server: " + describeError(e));
+        }
+    }
+
+    /** A real gap found live: the MCP SDK's McpSyncClient.initialize() wraps every real failure
+     * (a 403 from the server, a DNS failure, a TLS error) behind one generic message —
+     * "Client failed to initialize by explicit API call" — with the actually useful detail (e.g.
+     * "HTTP 403 Forbidden") several levels down the exception's cause chain. Walking it here
+     * instead of just calling e.getMessage() turns an unactionable error into one an admin can
+     * actually do something with. */
+    private String describeError(Throwable e) {
+        StringBuilder sb = new StringBuilder();
+        Throwable cur = e;
+        Set<String> seen = new LinkedHashSet<>();
+        while (cur != null && seen.add(cur.getMessage() + "|" + cur.getClass().getSimpleName())) {
+            String msg = cur.getMessage();
+            if (msg != null && !msg.isBlank()) {
+                if (!sb.isEmpty()) sb.append(" — caused by: ");
+                sb.append(msg);
+            }
+            cur = cur.getCause();
+        }
+        return sb.isEmpty() ? e.getClass().getSimpleName() : sb.toString();
+    }
+
+    /** Used by McpActionExecutor when a workflow item references a saved external server by id
+     * (typeConfig.mcpServerId) instead of an embedded serverUrl/auth snapshot — the live resolution
+     * OAuth2 needs, since a snapshot taken once at pick-time would eventually run on an expired
+     * token with no way to refresh it. */
+    public ResolvedAuth resolveConnectionAuth(Long serverId) {
+        return resolveConnectionAuth(findExternalOrThrow(serverId));
+    }
+
+    private ResolvedAuth resolveConnectionAuth(McpServerEntity entity) {
+        String type = entity.getConnectionAuthType() == null ? "none" : entity.getConnectionAuthType();
+        return switch (type) {
+            case "bearer" -> new ResolvedAuth(entity.getServerUrl(), "bearer", null, decryptOrNull(entity.getConnectionAuthTokenEnc()));
+            case "api_key" -> new ResolvedAuth(entity.getServerUrl(), "api_key", entity.getConnectionAuthHeaderName(), decryptOrNull(entity.getConnectionAuthTokenEnc()));
+            case "basic" -> {
+                String user = decryptOrNull(entity.getConnectionAuthUsernameEnc());
+                String pass = decryptOrNull(entity.getConnectionAuthPasswordEnc());
+                String combo = (user == null ? "" : user) + ":" + (pass == null ? "" : pass);
+                String b64 = Base64.getEncoder().encodeToString(combo.getBytes(StandardCharsets.UTF_8));
+                yield new ResolvedAuth(entity.getServerUrl(), "basic", null, b64);
+            }
+            case "oauth2_client_credentials" -> new ResolvedAuth(entity.getServerUrl(), "bearer", null, resolveClientCredentialsToken(entity));
+            case "oauth2_authorization_code" -> new ResolvedAuth(entity.getServerUrl(), "bearer", null, resolveAuthorizationCodeToken(entity));
+            default -> new ResolvedAuth(entity.getServerUrl(), "none", null, null);
+        };
+    }
+
+    /** Generalizes AzureService.getAccessTokenRaw's grant_type=client_credentials logic to an
+     * admin-supplied token URL instead of the hardcoded Microsoft tenant endpoint — no user
+     * interaction, no refresh_token; just re-POST with the same client_id/secret whenever the
+     * cached token is near/past expiry. */
+    private String resolveClientCredentialsToken(McpServerEntity entity) {
+        if (entity.getOauth2AccessTokenEnc() != null && entity.getOauth2TokenExpiry() != null
+                && entity.getOauth2TokenExpiry().isAfter(LocalDateTime.now().plusMinutes(5))) {
+            return decryptOrNull(entity.getOauth2AccessTokenEnc());
+        }
+        try {
+            String clientSecret = entity.getOauth2ClientSecretEnc() != null ? aes.decrypt(entity.getOauth2ClientSecretEnc()) : "";
+            StringBuilder body = new StringBuilder("grant_type=client_credentials")
+                    .append("&client_id=").append(URLEncoder.encode(nullToEmpty(entity.getOauth2ClientId()), StandardCharsets.UTF_8))
+                    .append("&client_secret=").append(URLEncoder.encode(clientSecret, StandardCharsets.UTF_8));
+            if (entity.getOauth2Scope() != null && !entity.getOauth2Scope().isBlank()) {
+                body.append("&scope=").append(URLEncoder.encode(entity.getOauth2Scope(), StandardCharsets.UTF_8));
+            }
+            Map<String, Object> tokenData = postForToken(entity.getOauth2TokenUrl(), body.toString());
+            storeOAuthTokens(entity, tokenData);
+            return (String) tokenData.get("access_token");
+        } catch (Exception e) {
+            log.warn("[McpServerService] client_credentials token fetch failed for server {}: {}", entity.getId(), e.getMessage());
+            return null;
+        }
+    }
+
+    /** Generalizes EmailMailboxService's Gmail/Microsoft refresh-token logic to an admin-supplied
+     * token URL. Returns the cached access token if still fresh, otherwise refreshes via the stored
+     * refresh_token — never re-runs the interactive browser flow automatically (that only happens
+     * via buildExternalAuthorizeUrl/handleExternalOAuth2Callback, admin-initiated). */
+    private String resolveAuthorizationCodeToken(McpServerEntity entity) {
+        if (entity.getOauth2AccessTokenEnc() == null) return null;
+        if (entity.getOauth2TokenExpiry() != null && entity.getOauth2TokenExpiry().isAfter(LocalDateTime.now().plusMinutes(5))) {
+            return decryptOrNull(entity.getOauth2AccessTokenEnc());
+        }
+        if (entity.getOauth2RefreshTokenEnc() == null) return decryptOrNull(entity.getOauth2AccessTokenEnc());
+        try {
+            String refreshToken = aes.decrypt(entity.getOauth2RefreshTokenEnc());
+            String clientSecret = entity.getOauth2ClientSecretEnc() != null ? aes.decrypt(entity.getOauth2ClientSecretEnc()) : "";
+            String body = "grant_type=refresh_token"
+                    + "&refresh_token=" + URLEncoder.encode(refreshToken, StandardCharsets.UTF_8)
+                    + "&client_id=" + URLEncoder.encode(nullToEmpty(entity.getOauth2ClientId()), StandardCharsets.UTF_8)
+                    + "&client_secret=" + URLEncoder.encode(clientSecret, StandardCharsets.UTF_8);
+            Map<String, Object> tokenData = postForToken(entity.getOauth2TokenUrl(), body);
+            storeOAuthTokens(entity, tokenData);
+            return (String) tokenData.get("access_token");
+        } catch (Exception e) {
+            log.warn("[McpServerService] refresh_token exchange failed for server {}: {}", entity.getId(), e.getMessage());
+            return decryptOrNull(entity.getOauth2AccessTokenEnc());
+        }
+    }
+
+    /** Step 1 of the interactive flow — admin clicks "Authorize", frontend opens this URL in a
+     * popup (mirrors EmailMailboxWizard.tsx's window.open pattern exactly). Generalizes
+     * EmailMailboxService.buildGmailAuthUrl/buildMicrosoftAuthUrl to the row's own admin-supplied
+     * authorize_url/client_id/scope instead of a fixed provider. */
+    public String buildExternalAuthorizeUrl(Long id) {
+        McpServerEntity entity = findExternalOrThrow(id);
+        if (entity.getOauth2AuthorizeUrl() == null || entity.getOauth2AuthorizeUrl().isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "No authorize URL configured for this server");
+        }
+        String sep = entity.getOauth2AuthorizeUrl().contains("?") ? "&" : "?";
+        StringBuilder url = new StringBuilder(entity.getOauth2AuthorizeUrl())
+                .append(sep).append("client_id=").append(URLEncoder.encode(nullToEmpty(entity.getOauth2ClientId()), StandardCharsets.UTF_8))
+                .append("&redirect_uri=").append(URLEncoder.encode(oauthRedirectUri(), StandardCharsets.UTF_8))
+                .append("&response_type=code")
+                .append("&state=").append(id);
+        if (entity.getOauth2Scope() != null && !entity.getOauth2Scope().isBlank()) {
+            url.append("&scope=").append(URLEncoder.encode(entity.getOauth2Scope(), StandardCharsets.UTF_8));
+        }
+        return url.toString();
+    }
+
+    /** Step 2 — the provider redirects the admin's browser back here (state = this server's id,
+     * same minimal CSRF-binding EmailMailboxController's callback already relies on) with a real
+     * authorization code, exchanged for tokens at the row's own token URL. */
+    public void handleExternalOAuth2Callback(Long id, String code) {
+        McpServerEntity entity = findExternalOrThrow(id);
+        try {
+            String clientSecret = entity.getOauth2ClientSecretEnc() != null ? aes.decrypt(entity.getOauth2ClientSecretEnc()) : "";
+            String body = "grant_type=authorization_code"
+                    + "&code=" + URLEncoder.encode(code, StandardCharsets.UTF_8)
+                    + "&client_id=" + URLEncoder.encode(nullToEmpty(entity.getOauth2ClientId()), StandardCharsets.UTF_8)
+                    + "&client_secret=" + URLEncoder.encode(clientSecret, StandardCharsets.UTF_8)
+                    + "&redirect_uri=" + URLEncoder.encode(oauthRedirectUri(), StandardCharsets.UTF_8);
+            Map<String, Object> tokenData = postForToken(entity.getOauth2TokenUrl(), body);
+            storeOAuthTokens(entity, tokenData);
+        } catch (Exception e) {
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "Token exchange failed: " + e.getMessage());
+        }
+    }
+
+    private Map<String, Object> postForToken(String tokenUrl, String formBody) throws Exception {
+        if (tokenUrl == null || tokenUrl.isBlank()) throw new IllegalStateException("No token URL configured for this server");
+        java.net.http.HttpRequest req = java.net.http.HttpRequest.newBuilder(java.net.URI.create(tokenUrl))
+                .header("Content-Type", "application/x-www-form-urlencoded")
+                .header("Accept", "application/json")
+                .POST(java.net.http.HttpRequest.BodyPublishers.ofString(formBody)).build();
+        java.net.http.HttpResponse<String> res = java.net.http.HttpClient.newHttpClient()
+                .send(req, java.net.http.HttpResponse.BodyHandlers.ofString());
+        if (res.statusCode() < 200 || res.statusCode() >= 300) {
+            throw new IOException("Token endpoint returned " + res.statusCode() + ": " + res.body());
+        }
+        return mapper.readValue(res.body(), new TypeReference<>() {});
+    }
+
+    private void storeOAuthTokens(McpServerEntity entity, Map<String, Object> tokenData) {
+        Object accessToken = tokenData.get("access_token");
+        if (accessToken != null) entity.setOauth2AccessTokenEnc(aes.encrypt(String.valueOf(accessToken)));
+        if (tokenData.get("refresh_token") != null) entity.setOauth2RefreshTokenEnc(aes.encrypt(String.valueOf(tokenData.get("refresh_token"))));
+        Object expiresIn = tokenData.get("expires_in");
+        if (expiresIn != null) {
+            long seconds = expiresIn instanceof Number n ? n.longValue() : Long.parseLong(String.valueOf(expiresIn));
+            entity.setOauth2TokenExpiry(LocalDateTime.now().plusSeconds(seconds));
+        }
+        repo.save(entity);
+    }
+
+    private void applyConnectionAuth(McpServerEntity entity, McpConnectionAuthDto auth) {
+        if (auth == null) return;
+        entity.setConnectionAuthType(auth.getType() == null || auth.getType().isBlank() ? "none" : auth.getType());
+        entity.setConnectionAuthHeaderName(auth.getHeaderName());
+        if (auth.getToken() != null && !auth.getToken().isBlank()) entity.setConnectionAuthTokenEnc(aes.encrypt(auth.getToken()));
+        if (auth.getUsername() != null) entity.setConnectionAuthUsernameEnc(auth.getUsername().isBlank() ? null : aes.encrypt(auth.getUsername()));
+        if (auth.getPassword() != null && !auth.getPassword().isBlank()) entity.setConnectionAuthPasswordEnc(aes.encrypt(auth.getPassword()));
+        if (auth.getOauth2AuthorizeUrl() != null) entity.setOauth2AuthorizeUrl(auth.getOauth2AuthorizeUrl());
+        if (auth.getOauth2TokenUrl() != null) entity.setOauth2TokenUrl(auth.getOauth2TokenUrl());
+        if (auth.getOauth2ClientId() != null) entity.setOauth2ClientId(auth.getOauth2ClientId());
+        if (auth.getOauth2ClientSecret() != null && !auth.getOauth2ClientSecret().isBlank()) entity.setOauth2ClientSecretEnc(aes.encrypt(auth.getOauth2ClientSecret()));
+        if (auth.getOauth2Scope() != null) entity.setOauth2Scope(auth.getOauth2Scope());
+    }
+
+    private McpServerEntity findExternalOrThrow(Long id) {
+        McpServerEntity entity = findOrThrow(id);
+        if (!"external".equals(entity.getServerKind())) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Not an external server");
+        }
+        return entity;
+    }
+
+    private String decryptOrNull(String enc) {
+        if (enc == null || enc.isBlank()) return null;
+        try {
+            return aes.decrypt(enc);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private String nullToEmpty(String s) { return s == null ? "" : s; }
+
+    /** Same hardcoded-localhost limitation EmailMailboxService.getRedirectUri already has in this
+     * codebase — no app-base-URL config exists to generalize it from. */
+    private String oauthRedirectUri() {
+        return "http://localhost:3000/api/v1/mcp-servers/oauth2/callback";
     }
 
     // ── DEPLOY ─────────────────────────────────────────────────────────────────
@@ -534,6 +800,7 @@ public class McpServerService {
     private McpServerDto toDto(McpServerEntity e) {
         McpServerDto dto = new McpServerDto();
         dto.setId(e.getId());
+        dto.setServerKind(e.getServerKind());
         dto.setName(e.getName());
         dto.setDescription(e.getDescription());
         dto.setTargetApiBaseUrl(e.getTargetApiBaseUrl());
@@ -542,10 +809,22 @@ public class McpServerService {
         dto.setSystem(e.isSystem());
         dto.setCreatedAt(e.getCreatedAt());
         dto.setUpdatedAt(e.getUpdatedAt());
-        McpServerRegistry.RunningMcpServer running = registry.get(e.getId());
-        dto.setStatus(running == null ? McpServerRegistry.Status.STOPPED.name() : running.status.name());
-        dto.setToolCount(running == null ? null : running.toolCount);
-        dto.setLastError(running == null ? null : running.lastError);
+        dto.setServerUrl(e.getServerUrl());
+        dto.setConnectionAuthType(e.getConnectionAuthType());
+        dto.setConnectionAuthHeaderName(e.getConnectionAuthHeaderName());
+        dto.setOauth2ClientId(e.getOauth2ClientId());
+        dto.setOauth2AuthorizeUrl(e.getOauth2AuthorizeUrl());
+        dto.setOauth2TokenUrl(e.getOauth2TokenUrl());
+        dto.setOauth2Scope(e.getOauth2Scope());
+        dto.setOauth2Authorized(e.getOauth2AccessTokenEnc() != null);
+        if ("external".equals(e.getServerKind())) {
+            dto.setStatus("EXTERNAL");
+        } else {
+            McpServerRegistry.RunningMcpServer running = registry.get(e.getId());
+            dto.setStatus(running == null ? McpServerRegistry.Status.STOPPED.name() : running.status.name());
+            dto.setToolCount(running == null ? null : running.toolCount);
+            dto.setLastError(running == null ? null : running.lastError);
+        }
         return dto;
     }
 
@@ -562,9 +841,10 @@ public class McpServerService {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "scriptContent is required");
     }
 
-    /** Used by McpServerBootstrapper on boot — every enabled row, redeployed fresh. */
+    /** Used by McpServerBootstrapper on boot — every enabled GENERATED row, redeployed fresh.
+     * External rows have no process to (re)deploy. */
     List<McpServerEntity> findAllEnabled() {
-        return repo.findByEnabledTrue();
+        return repo.findByEnabledTrue().stream().filter(e -> "generated".equals(e.getServerKind())).collect(Collectors.toList());
     }
 
     void deployAndStartOnBoot(McpServerEntity entity) {

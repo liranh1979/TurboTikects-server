@@ -35,15 +35,17 @@ import java.util.*;
  * { "serverUrl": "https://...", "auth": {"type":"none"|"bearer"|"api_key", "headerName" (api_key
  *   only, default "X-API-Key"), "tokenEnc" (server-managed)},
  *   "calls": [ { "id", "order", "toolName",
- *                "argumentMappings": [{"toolArgument","ticketField"} | {"toolArgument","captureName"}],
+ *                "argumentMappings": [{"toolArgument","ticketField"} | {"toolArgument","captureName"}
+ *                                     | {"toolArgument","literalValue"}],
  *                "responseCaptures": [{"name","resultPath"}] } ],
  *   "fieldMappings": { "response": [{"captureName","target"}] } }
  * }
  *
  * Simpler than external_api's shape in one respect: MCP tool arguments are a structured
  * Map&lt;String,Object&gt;, not a string template, so each argumentMapping declares its source
- * directly (a ticket field, or an earlier call's captured value) rather than going through a
- * {{placeholder}} indirection layer. A "ticketField" value prefixed "this." reads from the item's
+ * directly (a ticket field, an earlier call's captured value, or a fixed admin-typed constant —
+ * see coerceLiteral) rather than going through a {{placeholder}} indirection layer. A "ticketField"
+ * value prefixed "this." reads from the item's
  * own field_values instead of the ticket (same grammar as ExternalApiActionExecutor). "resultPath"
  * is a JSONPath expression evaluated against
  * whichever of the tool result's structuredContent / first TextContent-parsed-as-JSON / a
@@ -65,6 +67,7 @@ public class McpActionExecutor {
     private final AesEncryptionUtils aes;
     private final AdminInboxService adminInboxService;
     private final McpClientService mcpClientService;
+    private final McpServerService mcpServerService;
     private final WorkflowService workflowService;
     private final FieldDefinitionsRepository fieldDefinitionsRepo;
     private final AiSettingsService aiSettingsService;
@@ -73,6 +76,7 @@ public class McpActionExecutor {
                               TicketActivityLogRepository activityLogRepo,
                               AesEncryptionUtils aes, AdminInboxService adminInboxService,
                               McpClientService mcpClientService,
+                              McpServerService mcpServerService,
                               @Lazy WorkflowService workflowService,
                               FieldDefinitionsRepository fieldDefinitionsRepo,
                               AiSettingsService aiSettingsService) {
@@ -82,6 +86,7 @@ public class McpActionExecutor {
         this.aes = aes;
         this.adminInboxService = adminInboxService;
         this.mcpClientService = mcpClientService;
+        this.mcpServerService = mcpServerService;
         this.workflowService = workflowService;
         this.fieldDefinitionsRepo = fieldDefinitionsRepo;
         this.aiSettingsService = aiSettingsService;
@@ -162,10 +167,31 @@ public class McpActionExecutor {
                 return;
             }
 
+            String authType;
+            String headerName;
+            String token;
             Map<String, Object> auth = asMap(typeConfig.get("auth"));
-            String authType = str(auth.get("type"));
-            String headerName = str(auth.get("headerName"));
-            String token = decryptOrNull(authTokenOf(typeConfig));
+            // "saved_external" is a sentinel auth type (never sent to McpClientService) meaning
+            // "resolve serverUrl+auth live from this saved external server (McpServersManager,
+            // MANAGE_FIELDS-gated) by id" instead of using the embedded serverUrl/auth snapshot
+            // below — needed because OAuth2 connection auth genuinely expires and must be
+            // resolved/refreshed fresh at call time, not baked in once when the item's action was
+            // configured. Absent for every pre-existing workflow and for built-in-server picks,
+            // which keep using the embedded snapshot exactly as before. Kept inside the existing
+            // "auth" map (rather than a new top-level typeConfig field) so no frontend prop needed
+            // threading through WorkflowDesignerModal/AiWorkflowBuilderPage/ActionItemLibraryPage —
+            // the existing auth/onAuthChange plumbing already reaches every caller.
+            if ("saved_external".equals(str(auth.get("type"))) && auth.get("mcpServerId") instanceof Number n) {
+                McpServerService.ResolvedAuth resolved = mcpServerService.resolveConnectionAuth(n.longValue());
+                serverUrl = resolved.serverUrl();
+                authType = resolved.authType();
+                headerName = resolved.headerName();
+                token = resolved.token();
+            } else {
+                authType = str(auth.get("type"));
+                headerName = str(auth.get("headerName"));
+                token = decryptOrNull(authTokenOf(typeConfig));
+            }
             client = mcpClientService.openClient(serverUrl, authType, headerName, token);
 
             // Collects non-fatal capture/mapping problems (a resultPath that matched nothing, a
@@ -317,7 +343,16 @@ public class McpActionExecutor {
             if (toolArgument == null) continue;
             String ticketField = str(mapping.get("ticketField"));
             String captureName = str(mapping.get("captureName"));
-            if (captureName != null) {
+            // A real gap found live: some tool parameters are always the same fixed value for
+            // every ticket (e.g. a hotel-search tool's "rooms" parameter, since this app only ever
+            // books one room per ticket) — forcing every argument through "from ticket field" or
+            // "from earlier capture" left no way to express that without inventing a fake constant
+            // ticket field just to hold it. literalValue is a third, explicit source: an
+            // admin-typed constant, coerced to a real number/boolean when it looks like one so a
+            // typed schema (e.g. "rooms": integer) validates correctly — see coerceLiteral.
+            if (mapping.get("literalValue") != null) {
+                arguments.put(toolArgument, coerceLiteral(String.valueOf(mapping.get("literalValue"))));
+            } else if (captureName != null) {
                 // A missing capture (never extracted, or extracted from an earlier call that
                 // itself failed) must not silently become a null argument — that produces a
                 // confusing MCP schema-validation error far from its real cause. Fail loudly and
@@ -593,6 +628,22 @@ public class McpActionExecutor {
             log.error("[Mcp] Failed to decrypt the configured MCP server credential: {}", e.getMessage());
             return null;
         }
+    }
+
+    /** A hardcoded argument value is always typed as a string by the admin (a plain text input,
+     * per McpToolCallsEditor.tsx) — coerce it to a real number/boolean when it unambiguously looks
+     * like one, so a tool parameter typed e.g. "rooms": integer in its MCP schema still validates.
+     * Anything else (including something that merely starts with a digit, like a hotel id
+     * "TP-PH-1") stays a plain string. */
+    private Object coerceLiteral(String raw) {
+        if (raw.equalsIgnoreCase("true")) return Boolean.TRUE;
+        if (raw.equalsIgnoreCase("false")) return Boolean.FALSE;
+        if (raw.matches("-?\\d+")) {
+            try { return Long.parseLong(raw); } catch (NumberFormatException ignored) { /* falls through to string */ }
+        } else if (raw.matches("-?\\d+\\.\\d+")) {
+            try { return Double.parseDouble(raw); } catch (NumberFormatException ignored) { /* falls through to string */ }
+        }
+        return raw;
     }
 
     private static final Set<String> TICKET_COLUMN_FIELDS = Set.of("title", "description", "status", "priority");
